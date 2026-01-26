@@ -25,6 +25,3 @@ dist/
 
 # Large artifacts
 checkpoints/
-
-# Keep nested repo separate
-verl/
