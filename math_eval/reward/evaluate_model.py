@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import random
 import sys
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
+os.environ["VLLM_BATCH_INVARIANT"] = "1"
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRATCH_DIR = REPO_ROOT / "scratch"
-
 
 def _load_boxed_reward_fn():
     grader_path = REPO_ROOT / "verl" / "verl" / "utils" / "reward_score" / "hendrycks_math_grader.py"
@@ -25,21 +29,24 @@ def _load_boxed_reward_fn():
     return module.boxed_reward_fn
 
 
-def _infer_tensor_parallel_size(default_tp: int = 2) -> int:
-    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if not cuda_visible_devices:
-        return default_tp
-    devices = [dev.strip() for dev in cuda_visible_devices.split(",") if dev.strip()]
-    if not devices:
-        return default_tp
-    return min(default_tp, len(devices))
+def _infer_tensor_parallel_size() -> int:
+    return 1
+
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "Follow this instruction, carefully review your previous solution:\n"
+#     "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding.\n"
+#     "2. If you find any mistakes, explicitly point out what was wrong and explain the correct approach.\n"
+#     "3. If no mistakes are found, organize the steps to make them more concise and keep the correct answer.\n"
+#     "4. Finally, after finishing the review, you MUST write 'Improved solution:' and then provide your refined solution and answer inside \\boxed{}, like \\boxed{42} or \\boxed{\\frac{1}{2}}.\n"
+# )
+
 
 DEFAULT_REFLECTION_INSTRUCTION = (
     "Follow this instruction, carefully review your previous solution:\n"
     "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding.\n"
     "2. If you find any mistakes, explicitly point out what was wrong and explain the correct approach.\n"
-    "3. If no mistakes are found, organize the steps to make them more concise and keep the correct answer.\n"
-    "4. Finally, after finishing the review, you MUST write 'Improved solution:' and then provide your refined solution and answer inside \\boxed{}, like \\boxed{42} or \\boxed{\\frac{1}{2}}.\n"
+    "3. If the solution is already correct, verify each step and explain it more clearly.\n"
+    "4. Finally, after finishing the review, provide your refined solution and answer.\n"
 )
 
 BENCHMARKS = {
@@ -53,9 +60,9 @@ BENCHMARKS = {
 SAMPLE_SIZES = {
     "AIME24": None,
     "AMC": None,
-    "MATH500": 100,
-    "Minerva": 100,
-    "OlympiadBench": 100,
+    "MATH500": None,
+    "Minerva": None,
+    "OlympiadBench": None,
 }
 
 # SAMPLE_SIZES = {
@@ -100,27 +107,40 @@ def main():
     if len(sys.argv) > 1:
         model_path = sys.argv[1]
     else:
-        # model_path = "/datadrive2/checkpoints/grpo_math_baseline_Qwen3-4B-Instruct-2507/best_model"
-        model_path = "Qwen/Qwen3-4B-Instruct-2507"
+        # model_path = "Qwen/Qwen3-4B-Instruct-2507"
+        # model_path = "/data1/qianfeng/ckpts/grpo_math_baseline_Qwen3-4B-Instruct-2507/best_model"
+        # model_path = "/data1/qianfeng/ckpts/grpo_math_baseline_Qwen3-4B-Instruct-2507_batch32/best_model"
+        # model_path = "/data1/qianfeng/ckpts/drgrpo_math_baseline_Qwen3-4B-Instruct-2507/best_model"
+        model_path = "/data1/qianfeng/ckpts/dapo_math_Qwen3-4B-Instruct-2507-dapo-r8/best_model"
+        # model_path = "/data1/qianfeng/ckpts/grpo_math_refpo_dapo_Qwen3-4B-Instruct-2507/best_model"
+        # model_path = "/data1/qianfeng/ckpts/grpo_math_refpo_no_thinking_Qwen3-4B-Instruct-2507_uniform/best_model"
 
     print(f"Loading model: {model_path}")
-    print(f"vLLM config: tp={tensor_parallel_size}, 0.9 GPU utilization")
     print(f"Sampling: {N_SAMPLES} responses per problem")
-    print(f"Random seed: {RANDOM_SEED}")
     print(f"Reflection enabled: {ENABLE_REFLECTION}\n")
 
     llm = LLM(
         model=model_path,
-        tensor_parallel_size=tensor_parallel_size,
-        gpu_memory_utilization=0.9,
-        dtype="bfloat16",
+        tensor_parallel_size=2,
+        gpu_memory_utilization=0.85,
         trust_remote_code=True,
-        seed=RANDOM_SEED
+        seed=RANDOM_SEED,
+        disable_log_stats=True,
+        enforce_eager=True,  # Disable CUDA graphs for determinism
     )
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
+    # Set all random seeds for complete determinism
+    torch.manual_seed(RANDOM_SEED)
+    torch.cuda.manual_seed_all(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
+    random.seed(RANDOM_SEED)
+
+    # Ensure deterministic CUDA operations
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
 
     # ============================================================================
     # PHASE 1: BASE GENERATION
@@ -153,51 +173,70 @@ def main():
             formatted_prompt = tokenizer.apply_chat_template(
                 prompt_messages,
                 tokenize=False,
-                add_generation_prompt=True
+                add_generation_prompt=True,
+                enable_thinking=False
             )
 
-            for sample_idx in range(N_SAMPLES):
-                all_prompts.append(formatted_prompt)
-                metadata.append({
-                    'benchmark': bench_name,
-                    'problem_idx': idx,
-                    'sample_idx': sample_idx,
-                    'ground_truth': ground_truth,
-                    'raw_question': raw_question
-                })
+            all_prompts.append(formatted_prompt)
+            metadata.append({
+                'benchmark': bench_name,
+                'problem_idx': idx,
+                'ground_truth': ground_truth,
+                'raw_question': raw_question
+            })
 
     print(f"\nTotal base prompts to generate: {len(all_prompts)}")
 
+    # sampling_params = SamplingParams(
+    #     n=N_SAMPLES,
+    #     temperature=0.0,
+    #     top_p=1.0,
+    #     top_k=-1,
+    #     max_tokens=3000,
+    #     seed=RANDOM_SEED,
+    #     repetition_penalty=1.0,
+    # )
+
     sampling_params = SamplingParams(
-        temperature=1.0,
+        n=N_SAMPLES,
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
         max_tokens=3000,
-        top_p=1.0,
+        seed=RANDOM_SEED,
+        repetition_penalty=1.0,
     )
+
 
     print("Generating all base responses in one batch...")
     outputs = llm.generate(all_prompts, sampling_params)
 
     print("Grading base responses...")
     for idx, output in enumerate(outputs):
-        response = output.outputs[0].text
-        ground_truth = metadata[idx]['ground_truth']
-        grading_info, score = boxed_reward_fn(response, ground_truth, fast=True)
-        metadata[idx]['score'] = score
-        metadata[idx]['response'] = response
+        # Each output has N_SAMPLES completions
+        for sample_idx, sample_output in enumerate(output.outputs):
+            response = sample_output.text
+            ground_truth = metadata[idx]['ground_truth']
+            grading_info, score = boxed_reward_fn(response, ground_truth, fast=True)
+            # Store score with sample key
+            key = f"{idx}_{sample_idx}"
+            metadata[idx][f'score_{sample_idx}'] = score
+            metadata[idx][f'response_{sample_idx}'] = response
+
 
     # Compute base metrics
     base_results = {}
     for bench_name in BENCHMARKS.keys():
         bench_metadata = [m for m in metadata if m['benchmark'] == bench_name]
-        problem_indices = set(m['problem_idx'] for m in bench_metadata)
+        problem_indices = sorted(set(m['problem_idx'] for m in bench_metadata))
 
         pass_scores = []
         avg_scores = []
         maj_scores = []
 
         for prob_idx in problem_indices:
-            prob_samples = [m for m in bench_metadata if m['problem_idx'] == prob_idx]
-            scores = [m['score'] for m in prob_samples]
+            meta = bench_metadata[prob_idx]
+            scores = [meta.get(f'score_{i}', 0.0) for i in range(N_SAMPLES)]
 
             pass_at_n, avg_at_n, maj_at_n = compute_metrics(scores)
             pass_scores.append(pass_at_n)
@@ -246,38 +285,70 @@ def main():
     print(f"\n{'='*80}")
     print("PHASE 2: REFLECTION GENERATION")
     print(f"{'='*80}")
-
-    reflection_prompts = []
     reflection_metadata = []
 
-    for m in metadata:
+    reflection_prompts = []
+    reflection_base_info = []  # Track (base_idx, sample_idx) for each reflection
+
+    for base_idx, m in enumerate(metadata):
         raw_question = m['raw_question']
-        base_response = m['response']
+        
+        # Generate reflection prompt for EACH base sample
+        for sample_idx in range(N_SAMPLES):
+            base_response = m.get(f'response_{sample_idx}', '')
+            base_score = m.get(f'score_{sample_idx}', 0.0)
+            
+            if not base_response:
+                continue
+                
+            reflection_prompt_list = construct_reflection_prompts(
+                tokenizer, [raw_question], [base_response]
+            )
+            reflection_prompt = reflection_prompt_list[0]
 
-        reflection_prompt_list = construct_reflection_prompts(
-            tokenizer, [raw_question], [base_response]
-        )
-        reflection_prompt = reflection_prompt_list[0]
-
-        reflection_prompts.append(reflection_prompt)
-        reflection_metadata.append({
-            'benchmark': m['benchmark'],
-            'problem_idx': m['problem_idx'],
-            'sample_idx': m['sample_idx'],
-            'ground_truth': m['ground_truth'],
-            'base_score': m['score'],
-            'raw_question': raw_question,
-            'base_response': base_response
-        })
+            reflection_prompts.append(reflection_prompt)
+            reflection_base_info.append((base_idx, sample_idx))
+            reflection_metadata.append({
+                'benchmark': m['benchmark'],
+                'problem_idx': m['problem_idx'],
+                'base_idx': base_idx,
+                'sample_idx': sample_idx,
+                'ground_truth': m['ground_truth'],
+                'base_score': base_score,
+                'base_response': base_response
+            })
 
     print(f"Total reflection prompts to generate: {len(reflection_prompts)}")
 
     print("Generating all reflection responses in one batch...")
-    reflection_outputs = llm.generate(reflection_prompts, sampling_params)
+
+    reflection_sampling_params = SamplingParams(
+        n=1,
+        temperature=0.0,
+        top_p=1.0,
+        top_k=-1,
+        max_tokens=3000,
+        seed=RANDOM_SEED,
+        repetition_penalty=1.0,
+    )
+
+    # reflection_sampling_params = SamplingParams(
+    #     n=1,
+    #     temperature=0.7,
+    #     top_p=0.8,
+    #     top_k=20,
+    #     max_tokens=3000,
+    #     seed=RANDOM_SEED,
+    #     repetition_penalty=1.0,
+    # )
+
+    reflection_outputs = llm.generate(reflection_prompts, reflection_sampling_params)
 
     print("Grading reflection responses...")
     for idx, output in enumerate(reflection_outputs):
+        # One reflection completion per base response
         response = output.outputs[0].text
+        base_idx, base_sample_idx = reflection_base_info[idx]
         ground_truth = reflection_metadata[idx]['ground_truth']
         grading_info, score = boxed_reward_fn(response, ground_truth, fast=True)
         reflection_metadata[idx]['reflection_score'] = score
@@ -286,27 +357,35 @@ def main():
     # Compute reflection metrics
     reflection_results = {}
     for bench_name in BENCHMARKS.keys():
-        bench_metadata = [m for m in reflection_metadata if m['benchmark'] == bench_name]
-        problem_indices = set(m['problem_idx'] for m in bench_metadata)
-
+        # Group by problem_idx
+        problem_data = {}
+        for rm in reflection_metadata:
+            if rm['benchmark'] != bench_name:
+                continue
+            prob_idx = rm['problem_idx']
+            if prob_idx not in problem_data:
+                problem_data[prob_idx] = []
+            problem_data[prob_idx].append(rm)
+        
         pass_scores = []
         avg_scores = []
         maj_scores = []
-
-        for prob_idx in problem_indices:
-            prob_samples = [m for m in bench_metadata if m['problem_idx'] == prob_idx]
-            scores = [m['reflection_score'] for m in prob_samples]
-
-            pass_at_n, avg_at_n, maj_at_n = compute_metrics(scores)
-            pass_scores.append(pass_at_n)
-            avg_scores.append(avg_at_n)
-            maj_scores.append(maj_at_n)
-
+        
+        for prob_idx, samples in problem_data.items():
+            # Collect all reflection scores for this problem
+            scores = [s['reflection_score'] for s in samples if 'reflection_score' in s]
+            
+            if scores:
+                pass_at_n, avg_at_n, maj_at_n = compute_metrics(scores)
+                pass_scores.append(pass_at_n)
+                avg_scores.append(avg_at_n)
+                maj_scores.append(maj_at_n)
+        
         reflection_results[bench_name] = {
-            'n_problems': len(problem_indices),
-            f'pass@{N_SAMPLES}': np.mean(pass_scores) * 100,
-            f'avg@{N_SAMPLES}': np.mean(avg_scores) * 100,
-            f'maj@{N_SAMPLES}': np.mean(maj_scores) * 100,
+            'n_problems': len(problem_data),
+            f'pass@{N_SAMPLES}': np.mean(pass_scores) * 100 if pass_scores else 0.0,
+            f'avg@{N_SAMPLES}': np.mean(avg_scores) * 100 if avg_scores else 0.0,
+            f'maj@{N_SAMPLES}': np.mean(maj_scores) * 100 if maj_scores else 0.0,
         }
 
     print(f"\n{'='*80}")
@@ -328,9 +407,10 @@ def main():
         total_avg += result[f'avg@{N_SAMPLES}']
         total_maj += result[f'maj@{N_SAMPLES}']
 
-    avg_pass = total_pass / len(reflection_results)
-    avg_avg = total_avg / len(reflection_results)
-    avg_maj = total_maj / len(reflection_results)
+    n_benchmarks = len(reflection_results)
+    avg_pass = total_pass / n_benchmarks if n_benchmarks > 0 else 0
+    avg_avg = total_avg / n_benchmarks if n_benchmarks > 0 else 0
+    avg_maj = total_maj / n_benchmarks if n_benchmarks > 0 else 0
 
     print(f"{'-'*80}")
     print(f"{'Average':<15} {'':6} {avg_pass:>6.2f}%      {avg_avg:>6.2f}%      {avg_maj:>6.2f}%")
@@ -345,22 +425,40 @@ def main():
     transition_results = {}
 
     for bench_name in BENCHMARKS.keys():
-        bench_refl_meta = [m for m in reflection_metadata if m['benchmark'] == bench_name]
-
-        if not bench_refl_meta:
+        # Group reflection metadata by problem
+        problem_data = {}
+        for rm in reflection_metadata:
+            if rm['benchmark'] != bench_name:
+                continue
+            prob_idx = rm['problem_idx']
+            if prob_idx not in problem_data:
+                problem_data[prob_idx] = []
+            problem_data[prob_idx].append(rm)
+        
+        if not problem_data:
             continue
-
-        base_scores = [m['base_score'] for m in bench_refl_meta]
-        refl_scores = [m['reflection_score'] for m in bench_refl_meta]
-
+        
+        # Collect all base and reflection scores
+        base_scores = []
+        refl_scores = []
+        for samples in problem_data.values():
+            for sample in samples:
+                base_scores.append(sample['base_score'])
+                # Get reflection score
+                if 'reflection_score' in sample:
+                    refl_scores.append(sample['reflection_score'])
+        
+        if not base_scores or not refl_scores:
+            continue
+        
         good_to_good = sum(1 for b, r in zip(base_scores, refl_scores) if b >= 1.0 and r >= 1.0)
         good_to_bad = sum(1 for b, r in zip(base_scores, refl_scores) if b >= 1.0 and r < 1.0)
         bad_to_good = sum(1 for b, r in zip(base_scores, refl_scores) if b < 1.0 and r >= 1.0)
         bad_to_bad = sum(1 for b, r in zip(base_scores, refl_scores) if b < 1.0 and r < 1.0)
-
+        
         num_good = sum(1 for b in base_scores if b >= 1.0)
         num_bad = sum(1 for b in base_scores if b < 1.0)
-
+        
         transition_results[bench_name] = {
             'good→good': (good_to_good / num_good * 100) if num_good > 0 else 0.0,
             'good→bad': (good_to_bad / num_good * 100) if num_good > 0 else 0.0,
@@ -389,10 +487,10 @@ def main():
         avg_b2b += trans['bad→bad']
 
     n_benchmarks = len(transition_results)
-    avg_g2g /= n_benchmarks
-    avg_g2b /= n_benchmarks
-    avg_b2g /= n_benchmarks
-    avg_b2b /= n_benchmarks
+    avg_g2g /= n_benchmarks if n_benchmarks > 0 else 1
+    avg_g2b /= n_benchmarks if n_benchmarks > 0 else 1
+    avg_b2g /= n_benchmarks if n_benchmarks > 0 else 1
+    avg_b2b /= n_benchmarks if n_benchmarks > 0 else 1
 
     print(f"{'-'*80}")
     print(f"{'Average':<15} {avg_g2g:>6.2f}%      {avg_g2b:>6.2f}%      {avg_b2g:>6.2f}%      {avg_b2b:>6.2f}%")

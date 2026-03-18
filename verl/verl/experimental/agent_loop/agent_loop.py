@@ -16,6 +16,8 @@ import heapq
 import logging
 import os
 import random
+
+os.environ["VLLM_BATCH_INVARIANT"] = "1"
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 from uuid import uuid4

@@ -66,55 +66,85 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.config import FSDPEngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
-# Coundow Reflection Instruction
-# DEFAULT_REFLECTION_INSTRUCTION = (
-#     "Follow the instructions exactly:\n"
-#     "1. Do a self reflection, assess the previous response, pointing out any mistakes or explicitly confirming it is correct.\n"
-#     "2. Recompute the reasoning base on your reflection, ensuring every number is used exactly "
-#     "once with basic operations only.\n"
-#     "3. In <answer>...</answer>, output only the arithmetic expression (no '=' sign or target value) that evaluates "
-#     "to the required result.\n"
-# )
+# ============================================================================
+# REFLECTION PROMPT OPTIONS - Manually uncomment ONE to test
+# ============================================================================
 
-# GSM8K Reflection Instruction
-DEFAULT_REFLECTION_INSTRUCTION_GSM8K = (
-    "Review your previous GSM8K answer.\n"
-    "1) Check for arithmetic, logical, or unit errors.\n"
-    "2) Recompute succinctly to verify.\n"
-    "3) Output only the final numeric answer on the last line as \"#### <answer>\".\n"
-    "If the original answer is correct, keep the same final answer.\n"
-    "If the original answer is wrong, correct it.\n"
-)
-
-# MATH Reflection Instruction (boxed answer expected by graders like `math_dataset.py`)
-DEFAULT_REFLECTION_INSTRUCTION_MATH = (
+# OPTION 1: Original detailed prompt (for non-thinking models)
+DEFAULT_REFLECTION_INSTRUCTION = (
     "Follow this instruction, carefully review your previous solution:\n"
     "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding.\n"
     "2. If you find any mistakes, explicitly point out what was wrong and explain the correct approach.\n"
-    "3. If no mistakes are found, organize the steps to make them more concise and keep the correct answer.\n"
-    "4. Finally, after finishing the review, you MUST write 'Improved solution:' and then provide your refined solution and answer inside \\\\boxed{}, like \\\\boxed{42} or \\\\boxed{\\\\frac{1}{2}}.\n"
-)
-
-# Match the teammate (difan) default reflection prompt.
-# Note: the original question prompt already contains dataset-specific formatting requirements (e.g., \\boxed{}).
-DEFAULT_REFLECTION_INSTRUCTION = (
-    "Follow this instruction, carefully review your previous solution:\n"
-    "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding?\n"
-    "2. If you find any mistakes, explicitly point out what was wrong and explain the correct approach.\n"
     "3. If the solution is already correct, verify each step and explain it more clearly.\n"
-    "4. Finally, after finishing the review, YOU MUST write 'Improved solution:' and provide your refined solution and answer.\n"
+    "4. Finally, after finishing the review, provide your refined solution and answer.\n"
 )
 
-# Validation sampling caps per benchmark (I.D. + OOD) to keep validation fast.
-VAL_SAMPLE_SIZES: dict[str, int] = {
-    "AIME24": 18,
-    "AMC": 17,
-    "MATH500": 100,
-    "Minerva": 54,
-    "OlympiadBench": 116,
+# # OPTION 2: Verification-focused (for thinking models) - emphasize independent verification
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "You previously solved this math problem. Now independently verify your answer:\n"
+#     "1. Re-read the problem and confirm you understood it correctly.\n"
+#     "2. Check your final answer by solving the problem again from scratch.\n"
+#     "3. If your new answer differs from your previous one, determine which is correct.\n"
+#     "4. Provide your refined solution and answer.\n"
+# )
+
+# # OPTION 3: Error-hunting focused - focus on finding specific mistakes
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "Review your previous solution and hunt for errors:\n"
+#     "1. Did you misunderstand any part of the problem?\n"
+#     "2. Are there any calculation mistakes? Check each step carefully.\n"
+#     "3. Did you use the wrong formula or approach?\n"
+#     "4. If you find an error, correct it and provide the refined answer. If no errors, confirm your answer.\n"
+#     "Final answer format: \\boxed{YOUR_ANSWER}\n"
+# )
+
+# # OPTION 4: Concise/direct - short and to the point
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "Check your previous answer. If you believe it's wrong, explicitly point out what was wrong and explain the correct approach. "
+#     "If you believe it's correct, simply confirm it. Put your final answer in \\boxed{}.\n"
+# )
+
+# # OPTION 5: Structured fresh-look - step-by-step with fresh perspective
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "Take a fresh look at this problem and your previous answer:\n"
+#     "- Work through the problem methodically in your thinking.\n"
+#     "- Identify any mistakes in your previous approach.\n"
+#     "- Provide your refined solution, ending with \\boxed{FINAL_ANSWER}.\n"
+# )
+
+# OPTION 6
+DEFAULT_REFLECTION_INSTRUCTION = (
+    "Review your previous solution, including your thinking process:\n"
+    "1. Examine your reasoning step-by-step in your thinking. Are there logical gaps, errors, or unclear steps?\n"
+    "2. Check your calculations and approach - did you use the right formula or method?\n"
+    "3. If you find mistakes in your reasoning or approach, explain what was wrong and provide the correct reasoning.\n"
+    "4. If your solution is already correct, verify each step and confirm your approach.\n"
+    "5. Finally, after finishing the review, provide your refined solution and answer.\n"
+)
+
+VAL_SAMPLE_SIZES: dict[str, int | None] = {
+    "AIME24": None,
+    "AMC": None,
+    "MATH500": None,
+    "Minerva": None,
+    "OlympiadBench": None,
+}
+
+VAL_REFLECTION_SAMPLE_SIZES: dict[str, int] = {
+    "AIME24": None,
+    "AMC": None,
+    "MATH500": None,
+    "Minerva": None,
+    "OlympiadBench": None,
 }
 
 VAL_SAMPLE_RANDOM_SEED = 42
+VAL_REFLECTION_RANDOM_SEED = 42
+
+VAL_GENERATION_LOG_SIZE = 128
+VAL_GENERATION_LOG_SEED = 42
+
+MATH500_DIFFICULTY_LEVELS: dict[int, int] = {}
 
 
 def _json_default(obj: Any) -> Any:
@@ -421,42 +451,13 @@ class RayPPOTrainer:
             # Compatibility with the teammate workflow: reflection is enabled via `algorithm.reflection.steps`.
             use_reflection = self.reflection_steps > 0
         elif use_reflection is None:
-            # Default: reflection training is opt-in.
             use_reflection = False
         self.use_reflection = bool(use_reflection)
 
-        # Validation subsampling cache (to speed up repeated validations).
         self._val_sampled_indices: Optional[dict[str, list[int]]] = None
+        self._val_reflection_sampled_indices: Optional[dict[str, list[int]]] = None
+        self._val_generation_log_indices: Optional[list[int]] = None
 
-        # Optional OOD base answers (pre-generated) for reflection validation.
-        self.ood_base_answers_path: Optional[str] = None
-        self.ood_base_answers_df = None
-        ood_base_answers_path = (
-            reflection_cfg.get("ood_base_answers_path")
-            or self.config.trainer.get("ood_base_answers_path", None)
-            or os.path.join(
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../")),
-                "math_eval",
-                "ood_traces",
-                "qwen3-30b-a3b",
-                "base_answers.parquet",
-            )
-        )
-        self.ood_base_answers_path = ood_base_answers_path
-        if self.reflection_validate and self.ood_base_answers_path:
-            if os.path.exists(self.ood_base_answers_path):
-                try:
-                    import pandas as pd
-
-                    self.ood_base_answers_df = pd.read_parquet(self.ood_base_answers_path)
-                    print(f"Loaded OOD base answers from {self.ood_base_answers_path}")
-                except Exception as e:
-                    print(f"Failed to load OOD base answers from {self.ood_base_answers_path}: {e}")
-                    self.ood_base_answers_df = None
-            else:
-                print(f"OOD base answers not found at {self.ood_base_answers_path}, OOD reflection will be skipped")
-
-        # if ref_in_actor is True, the reference policy will be actor without lora applied
         self.ref_in_actor = (
             config.actor_rollout_ref.model.get("lora_rank", 0) > 0
             or config.actor_rollout_ref.model.get("lora_adapter_path") is not None
@@ -471,6 +472,11 @@ class RayPPOTrainer:
         self.use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+
+        filter_groups_cfg = self.config.algorithm.get("filter_groups", None)
+        self.dapo_enabled = filter_groups_cfg is not None and filter_groups_cfg.get("enable", False)
+        self.dapo_metric = filter_groups_cfg.get("metric", "acc") if self.dapo_enabled else "acc"
+        self.dapo_max_gen_batches = filter_groups_cfg.get("max_num_gen_batches", 0) if self.dapo_enabled else 0
 
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
         """
@@ -796,19 +802,58 @@ class RayPPOTrainer:
         if response_mask is None and "attention_mask" in gen_batch_output.batch:
             response_mask = compute_response_mask(gen_batch_output)
         reflection_prompts = []
+
+        # Get the thinking markers for Qwen3 (tokens 151667 and 15168)
+        thinking_start_marker = self.tokenizer.decode([151667], skip_special_tokens=False)
+        thinking_end_marker = self.tokenizer.decode([151668], skip_special_tokens=False)
+
         for i in range(len(raw_prompts)):
             question = self._extract_last_user_message(raw_prompts[i])
             response_ids = responses[i]
             if response_mask is not None:
                 response_ids = response_ids[response_mask[i].bool()]
-            answer = self.tokenizer.decode(response_ids.tolist(), skip_special_tokens=True)
-            reflection_prompts.append(
-                [
-                    {"role": "user", "content": question},
-                    {"role": "assistant", "content": answer},
-                    {"role": "user", "content": self.reflection_instruction},
-                ]
-            )
+
+            # Decode WITHOUT skipping special tokens to preserve thinking markers
+            full_response = self.tokenizer.decode(response_ids.tolist(), skip_special_tokens=False)
+
+            # Extract thinking content and final answer
+            thinking_content = None
+            final_answer = full_response
+
+            if thinking_start_marker in full_response:
+                parts = full_response.split(thinking_start_marker, 1)
+                if len(parts) > 1:
+                    middle_part = parts[1]
+                    if thinking_end_marker in middle_part:
+                        thinking_part, answer_part = middle_part.split(thinking_end_marker, 1)
+                        thinking_content = thinking_part.strip()
+                        final_answer = answer_part.strip()
+                    else:
+                        thinking_content = middle_part.strip()
+                        final_answer = ""
+            else:
+                final_answer = full_response.strip()
+
+            # Build the user's reflection instruction with previous thinking
+            reflection_user_content = self.reflection_instruction
+            if thinking_content:
+                reflection_user_content = (
+                    f"Your previous reasoning:\n{thinking_content}\n\n"
+                    f"Your previous answer:\n{final_answer}\n\n"
+                    f"{self.reflection_instruction}"
+                )
+            elif final_answer and final_answer != full_response.strip():
+                reflection_user_content = (
+                    f"Your previous answer:\n{final_answer}\n\n"
+                    f"{self.reflection_instruction}"
+                )
+
+            messages = [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": final_answer},
+                {"role": "user", "content": reflection_user_content},
+            ]
+            reflection_prompts.append(messages)
 
         if base_non_tensor_batch is not None:
             reflection_non_tensor_batch = dict(base_non_tensor_batch)
@@ -818,23 +863,261 @@ class RayPPOTrainer:
         self._mark_extra_info_reflection(reflection_non_tensor_batch, batch_size=len(reflection_prompts))
         return DataProto(batch=None, non_tensor_batch=reflection_non_tensor_batch)
 
+    def _apply_dapo_filter(self, batch: DataProto, metric_name: str = "acc"):
+        uids = batch.non_tensor_batch["uid"]
+        if metric_name == "seq_final_reward":
+            metric_vals = batch.batch["token_level_rewards"].sum(dim=-1).cpu().numpy()
+        elif metric_name == "seq_reward":
+            metric_vals = batch.batch["token_level_scores"].sum(dim=-1).cpu().numpy()
+        elif metric_name in batch.non_tensor_batch:
+            metric_vals = np.asarray(batch.non_tensor_batch[metric_name])
+        else:
+            raise ValueError(f"DAPO filter metric '{metric_name}' not found in batch")
+        prompt_uid2vals = defaultdict(list)
+        for uid, val in zip(uids, metric_vals):
+            prompt_uid2vals[uid].append(val)
+        total_prompts = len(prompt_uid2vals)
+        kept_prompt_uids = []
+        for uid, vals in prompt_uid2vals.items():
+            std = np.std(vals)
+            if std > 0 or len(vals) == 1:
+                kept_prompt_uids.append(uid)
+        kept_prompt_uids_set = set(kept_prompt_uids)
+        kept_traj_idxs = [i for i, uid in enumerate(uids) if uid in kept_prompt_uids_set]
+        filtered_batch = batch[kept_traj_idxs] if kept_traj_idxs else None
+        filter_stats = {
+            "total_prompts": total_prompts,
+            "kept_prompts": len(kept_prompt_uids),
+            "filtered_prompts": total_prompts - len(kept_prompt_uids),
+            "total_trajectories": len(uids),
+            "kept_trajectories": len(kept_traj_idxs),
+        }
+        print(f"[DAPO Filter] total_prompts={total_prompts}, kept={len(kept_prompt_uids)}, "
+              f"filtered_out={total_prompts - len(kept_prompt_uids)}, "
+              f"trajectories: {len(uids)} -> {len(kept_traj_idxs)}")
+        return filtered_batch, filter_stats
+
+    def _prepare_reflection_selection_data(
+        self,
+        batch: DataProto,
+        reflection_base_batch: DataProto,
+        reflection_gen_source: DataProto,
+        repeat_times: int,
+    ) -> Optional[dict]:
+        is_correct = None
+        for key in ("acc", "is_correct", "correct"):
+            if key in batch.non_tensor_batch:
+                is_correct = np.asarray(batch.non_tensor_batch[key], dtype=bool).reshape(-1)
+                break
+        if is_correct is None:
+            reward_scores = batch.batch["token_level_scores"]
+            if reward_scores.ndim > 1:
+                reward_scores = reward_scores.sum(dim=-1)
+            is_correct = (reward_scores.detach().cpu().numpy() > 0).reshape(-1)
+
+        if len(is_correct) == len(batch) and "uid" in batch.non_tensor_batch:
+            response_mask = batch.batch["response_mask"] if "response_mask" in batch.batch.keys() else None
+            reflection_seed = int(self.config.data.get("seed") or 0)
+            selection_mode = str(self.config.algorithm.get("reflection_selection_mode", "wrong-first"))
+            num_select = len(batch) // max(1, repeat_times)
+
+            if selection_mode in {"variance-based", "variance_based"}:
+                return {
+                    "base_batch": reflection_base_batch,
+                    "gen_source": reflection_gen_source,
+                    "batch_uids": batch.non_tensor_batch["uid"],
+                    "batch_responses": batch.batch["responses"],
+                    "is_correct": is_correct,
+                    "response_mask": response_mask,
+                    "num_select": num_select,
+                    "repeat_times": repeat_times,
+                    "reflection_seed": reflection_seed,
+                    "selection_mode": selection_mode,
+                }
+
+        return None
+
+    def _select_reflection_candidates(
+        self,
+        batch: DataProto,
+        reflection_base_batch: DataProto,
+        reflection_gen_source: DataProto,
+        repeat_times: int,
+    ) -> tuple[Optional[DataProto], Optional[DataProto]]:
+        is_correct = None
+        for key in ("acc", "is_correct", "correct"):
+            if key in batch.non_tensor_batch:
+                is_correct = np.asarray(batch.non_tensor_batch[key], dtype=bool).reshape(-1)
+                break
+        if is_correct is None:
+            reward_scores = batch.batch["token_level_scores"]
+            if reward_scores.ndim > 1:
+                reward_scores = reward_scores.sum(dim=-1)
+            is_correct = (reward_scores.detach().cpu().numpy() > 0).reshape(-1)
+
+        if len(is_correct) == len(batch) and "uid" in batch.non_tensor_batch:
+            response_mask = batch.batch["response_mask"] if "response_mask" in batch.batch.keys() else None
+            reflection_seed = int(self.config.data.get("seed") or 0)
+            selection_mode = str(self.config.algorithm.get("reflection_selection_mode", "wrong-first"))
+            num_select = len(batch) // max(1, repeat_times)
+
+            reflection_indices = select_reflection_indices(
+                batch.non_tensor_batch["uid"],
+                batch.batch["responses"],
+                is_correct,
+                num_select=num_select,
+                response_mask=response_mask,
+                seed=reflection_seed,
+                step=self.global_steps,
+                selection_mode=selection_mode,
+            )
+            if reflection_indices:
+                selected_base = reflection_base_batch.select_idxs(reflection_indices)
+                selected_gen = reflection_gen_source.select_idxs(reflection_indices)
+                self._mark_extra_info_reflection(
+                    selected_base.non_tensor_batch, batch_size=len(selected_base)
+                )
+                reflection_gen_batch = self._build_reflection_gen_batch(
+                    selected_gen,
+                    base_non_tensor_batch=selected_base.non_tensor_batch,
+                )
+                if reflection_gen_batch is not None:
+                    return selected_base, reflection_gen_batch
+
+        return None, None
+
+    def _generate_variance_based_reflection(
+        self,
+        stored_data: dict,
+        gen_batch_output: DataProto,
+    ) -> Optional[tuple[DataProto, DataProto]]:
+        reflection_base_batch = stored_data["base_batch"]
+        reflection_gen_source = stored_data["gen_source"]
+        uids = stored_data["batch_uids"]
+        is_correct = stored_data["is_correct"]
+        response_mask = stored_data["response_mask"]
+        num_select = stored_data["num_select"]
+        repeat_times = stored_data["repeat_times"]
+        reflection_seed = stored_data["reflection_seed"]
+        selection_mode = stored_data["selection_mode"]
+
+        reflection_gen_batch = self._build_reflection_gen_batch(
+            reflection_gen_source,
+            base_non_tensor_batch=reflection_base_batch.non_tensor_batch,
+        )
+
+        if reflection_gen_batch is None:
+            return None
+
+        reflection_gen_batch.meta_info = dict(gen_batch_output.meta_info)
+        reflection_gen_batch = reflection_gen_batch.repeat(repeat_times=repeat_times, interleave=True)
+
+        size_divisor = (
+            self.actor_rollout_wg.world_size
+            if not self.async_rollout_mode
+            else self.config.actor_rollout_ref.rollout.agent.num_workers
+        )
+
+        reflection_gen_batch_padded, pad_size = pad_dataproto_to_divisor(
+            reflection_gen_batch, size_divisor
+        )
+
+        if not self.async_rollout_mode:
+            reflection_output = self.actor_rollout_wg.generate_sequences(reflection_gen_batch_padded)
+        else:
+            reflection_output = self.async_rollout_manager.generate_sequences(reflection_gen_batch_padded)
+
+        reflection_output = unpad_dataproto(reflection_output, pad_size=pad_size)
+        reflection_output.meta_info["validate"] = False
+
+        computed_correctness = None
+        try:
+            reward_extra_keys = set(reflection_output.meta_info.get("reward_extra_keys", []))
+            merged_non_tensor = dict(reflection_output.non_tensor_batch)
+            for key, value in reflection_gen_batch.non_tensor_batch.items():
+                if key not in reward_extra_keys and key not in merged_non_tensor:
+                    merged_non_tensor[key] = value
+
+            temp_batch = DataProto(
+                batch=reflection_output.batch,
+                non_tensor_batch=merged_non_tensor,
+                meta_info=reflection_output.meta_info
+            )
+
+            reward_result = self.reward_fn(temp_batch, return_dict=True)
+            reward_extra_info = reward_result.get("reward_extra_info", {})
+
+            if "acc" in reward_extra_info:
+                computed_correctness = np.asarray(reward_extra_info["acc"], dtype=bool).reshape(-1)
+        except Exception:
+            pass
+
+        reward_extra_keys = set(reflection_output.meta_info.get("reward_extra_keys", []))
+        merged_non_tensor = dict(reflection_output.non_tensor_batch)
+        for key, value in reflection_gen_batch.non_tensor_batch.items():
+            if key not in reward_extra_keys and key not in merged_non_tensor:
+                merged_non_tensor[key] = value
+        reflection_output.non_tensor_batch = merged_non_tensor
+
+        if computed_correctness is not None:
+            reflection_is_correct = computed_correctness
+        else:
+            reflection_is_correct = None
+            for key in ("acc", "is_correct", "correct"):
+                if key in reflection_output.non_tensor_batch:
+                    reflection_is_correct = np.asarray(reflection_output.non_tensor_batch[key], dtype=bool).reshape(-1)
+                    break
+
+        if reflection_is_correct is None:
+            reflection_reward_scores = reflection_output.batch.get("token_level_scores")
+            if reflection_reward_scores is not None:
+                if reflection_reward_scores.ndim > 1:
+                    reflection_reward_scores = reflection_reward_scores.sum(dim=-1)
+                reflection_is_correct = (reflection_reward_scores.detach().cpu().numpy() > 0).reshape(-1)
+
+        if reflection_is_correct is not None:
+            reflection_indices = select_reflection_indices(
+                uids,
+                reflection_gen_source.batch["responses"],
+                is_correct,
+                num_select=num_select,
+                response_mask=response_mask,
+                seed=reflection_seed,
+                step=self.global_steps,
+                selection_mode=selection_mode,
+                reflection_is_correct=reflection_is_correct,
+                repeat_times=repeat_times,
+            )
+
+            if reflection_indices:
+                selected_base_batch = reflection_base_batch.select_idxs(reflection_indices)
+                selected_gen_source = reflection_gen_source.select_idxs(reflection_indices)
+
+                self._mark_extra_info_reflection(
+                    selected_base_batch.non_tensor_batch, batch_size=len(selected_base_batch)
+                )
+
+                selected_reflection_gen_batch = self._build_reflection_gen_batch(
+                    selected_gen_source,
+                    base_non_tensor_batch=selected_base_batch.non_tensor_batch,
+                )
+                if selected_reflection_gen_batch is not None:
+                    selected_reflection_gen_batch.meta_info = dict(gen_batch_output.meta_info)
+                    return selected_base_batch, selected_reflection_gen_batch
+
+        return None, None
+
     def _validate(self):
         data_source_lst: list[np.ndarray] = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
         reflection_reward_extra_infos_dict: dict[str, list] = defaultdict(list)
-        ood_reflection_data_source_lst: list[np.ndarray] = []
-        ood_reflection_reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
-        ood_base_scores_list: list[float] = []
-        ood_reflection_scores_list: list[float] = []
-        ood_reflection_sample_uids: list[str] = []
-
-        # Lists to collect samples for the table
         sample_inputs = []
         sample_outputs = []
         sample_gts = []
         sample_scores = []
         sample_turns = []
+        sample_difficulty_levels = []
         base_correct_list = []
         reflection_correct_list = []
         reflection_scores = []
@@ -843,6 +1126,11 @@ class RayPPOTrainer:
         reflection_gts = []
         reflection_transitions = []
         reflection_data_source_lst = []
+        reflection_score_by_idx: dict[int, float] = {}
+        reflection_input_by_idx: dict[int, str] = {}
+        reflection_output_by_idx: dict[int, str] = {}
+        reflection_correct_by_idx: dict[int, int] = {}
+        data_source_by_idx: dict[int, str] = {}
 
         def _extract_correct(reward_extra_info: dict[str, list], scores: list[float]) -> np.ndarray:
             for key in ("acc", "is_correct", "correct"):
@@ -876,9 +1164,33 @@ class RayPPOTrainer:
                 else:
                     self._val_sampled_indices[data_source] = indices
 
-        sampled_indices_set: set[int] = set()
+        if self._val_reflection_sampled_indices is None:
+            self._val_reflection_sampled_indices = {}
+            dataset_by_source: dict[str, list[int]] = defaultdict(list)
+            for idx, sample in enumerate(self.val_dataset):
+                data_source = "unknown"
+                if isinstance(sample, dict):
+                    data_source = sample.get("data_source", "unknown")
+                else:
+                    data_source = getattr(sample, "data_source", "unknown")
+                dataset_by_source[data_source].append(idx)
+
+            rng = np.random.RandomState(VAL_REFLECTION_RANDOM_SEED)
+            for data_source, indices in dataset_by_source.items():
+                max_samples = VAL_REFLECTION_SAMPLE_SIZES.get(data_source, None)
+                if max_samples is not None and len(indices) > max_samples:
+                    sampled = rng.choice(indices, size=max_samples, replace=False).tolist()
+                    self._val_reflection_sampled_indices[data_source] = sampled
+                else:
+                    self._val_reflection_sampled_indices[data_source] = indices
+
+        base_indices_set: set[int] = set()
         for indices in (self._val_sampled_indices or {}).values():
-            sampled_indices_set.update(indices)
+            base_indices_set.update(indices)
+
+        reflection_indices_set: set[int] = set()
+        for indices in (self._val_reflection_sampled_indices or {}).values():
+            reflection_indices_set.update(indices)
 
         current_idx = 0
         for test_data in self.val_dataloader:
@@ -887,23 +1199,25 @@ class RayPPOTrainer:
             batch_indices = range(current_idx, current_idx + batch_size)
             current_idx += batch_size
 
-            if sampled_indices_set:
-                keep_indices = [i for i, idx in enumerate(batch_indices) if idx in sampled_indices_set]
+            if base_indices_set:
+                keep_indices = [i for i, idx in enumerate(batch_indices) if idx in base_indices_set]
                 if not keep_indices:
                     continue
                 test_batch = test_batch[keep_indices]
+                # Update batch_indices to reflect the kept samples (needed for reflection indexing)
+                batch_indices = [batch_indices[i] for i in keep_indices]
 
             if "uid" not in test_batch.non_tensor_batch:
                 test_batch.non_tensor_batch["uid"] = np.array(
                     [str(uuid.uuid4()) for _ in range(len(test_batch))], dtype=object
                 )
 
-            # repeat test batch
-            test_batch = test_batch.repeat(
-                repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
-            )
+            n_val = self.config.actor_rollout_ref.rollout.val_kwargs.n
+            test_batch = test_batch.repeat(repeat_times=n_val, interleave=True)
+            # Repeat batch_indices to match the repeated batch (interleaved)
+            if n_val > 1:
+                batch_indices = [idx for idx in batch_indices for _ in range(n_val)]
 
-            # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
                 return {}
 
@@ -912,12 +1226,26 @@ class RayPPOTrainer:
             ]
             sample_gts.extend(ground_truths)
 
+            for item in test_batch:
+                level_str = item.non_tensor_batch.get("extra_info", {}).get("level", None)
+                if level_str is None:
+                    level_str = item.non_tensor_batch.get("level", "Level 3")
+                if isinstance(level_str, str) and level_str.startswith("Level "):
+                    try:
+                        level = int(level_str.split()[-1])
+                    except ValueError:
+                        level = 3
+                else:
+                    level = 3
+                sample_difficulty_levels.append(level)
+
             test_gen_batch = self._get_gen_batch(test_batch)
             test_gen_batch.meta_info = {
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
                 "recompute_log_prob": False,
-                "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
+                "do_sample": False,
+                "temperature": 0.0,
                 "validate": True,
                 "global_steps": self.global_steps,
             }
@@ -978,82 +1306,105 @@ class RayPPOTrainer:
 
             base_data_sources = test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0])
             data_source_lst.append(np.array([f"{ds}_id_base" for ds in base_data_sources], dtype=object))
+            for idx, ds in zip(batch_indices, base_data_sources):
+                data_source_by_idx[idx] = ds
 
             if enable_reflection_val:
-                reflection_gen_batch = self._build_reflection_gen_batch(
-                    test_output_gen_batch, base_non_tensor_batch=test_batch.non_tensor_batch
-                )
-                if reflection_gen_batch is not None:
-                    reflection_gen_batch.meta_info = dict(test_gen_batch.meta_info)
-                    reflection_gen_batch_padded, reflection_pad_size = pad_dataproto_to_divisor(
-                        reflection_gen_batch, size_divisor
+                in_reflection_set = [idx in reflection_indices_set for idx in batch_indices]
+                if any(in_reflection_set):
+                    refl_test_batch = test_batch[in_reflection_set]
+                    refl_test_output_gen_batch = test_output_gen_batch[in_reflection_set]
+                    refl_ground_truths = [ground_truths[i] for i, val in enumerate(in_reflection_set) if val]
+
+                    reflection_gen_batch = self._build_reflection_gen_batch(
+                        refl_test_output_gen_batch, base_non_tensor_batch=refl_test_batch.non_tensor_batch
                     )
-                    if not self.async_rollout_mode:
-                        reflection_output_padded = self.actor_rollout_wg.generate_sequences(reflection_gen_batch_padded)
-                    else:
-                        reflection_output_padded = self.async_rollout_manager.generate_sequences(reflection_gen_batch_padded)
-                    reflection_output = unpad_dataproto(reflection_output_padded, pad_size=reflection_pad_size)
-                    reflection_gen_batch = unpad_dataproto(reflection_gen_batch_padded, pad_size=reflection_pad_size)
-                    reflection_output.meta_info["validate"] = True
-
-                    # Merge prompt-side fields without overwriting reward extras from reflection generation.
-                    reward_extra_keys = set(reflection_output.meta_info.get("reward_extra_keys", []))
-                    merged_non_tensor = dict(reflection_output.non_tensor_batch)
-                    for key, value in reflection_gen_batch.non_tensor_batch.items():
-                        if key not in reward_extra_keys and key not in merged_non_tensor:
-                            merged_non_tensor[key] = value
-                    reflection_output.non_tensor_batch = merged_non_tensor
-                    reflection_output_ids = reflection_output.batch["responses"]
-                    reflection_output_texts = [
-                        self.tokenizer.decode(ids, skip_special_tokens=True) for ids in reflection_output_ids
-                    ]
-                    reflection_outputs.extend(reflection_output_texts)
-                    reflection_input_ids = reflection_output.batch["prompts"]
-                    reflection_input_texts = [
-                        self.tokenizer.decode(ids, skip_special_tokens=True) for ids in reflection_input_ids
-                    ]
-                    reflection_inputs.extend(reflection_input_texts)
-                    reflection_gts.extend(ground_truths)
-
-                    reflection_result = self.val_reward_fn(reflection_output, return_dict=True)
-                    reflection_reward_tensor = reflection_result["reward_tensor"]
-                    reflection_score_list = reflection_reward_tensor.sum(-1).cpu().tolist()
-                    reflection_scores.extend(reflection_score_list)
-
-                    reflection_reward_extra_info = reflection_result.get("reward_extra_info", {})
-                    reflection_reward_extra_infos_dict["reward"].extend(reflection_score_list)
-                    for key, values in reflection_reward_extra_info.items():
-                        if key not in reflection_reward_extra_infos_dict:
-                            reflection_reward_extra_infos_dict[key] = []
-                        if isinstance(values, np.ndarray):
-                            reflection_reward_extra_infos_dict[key].extend(values.tolist())
+                    if reflection_gen_batch is not None:
+                        reflection_gen_batch.meta_info = dict(test_gen_batch.meta_info)
+                        reflection_gen_batch_padded, reflection_pad_size = pad_dataproto_to_divisor(
+                            reflection_gen_batch, size_divisor
+                        )
+                        if not self.async_rollout_mode:
+                            reflection_output_padded = self.actor_rollout_wg.generate_sequences(reflection_gen_batch_padded)
                         else:
-                            reflection_reward_extra_infos_dict[key].extend(
-                                values if isinstance(values, list) else [values]
-                            )
+                            reflection_output_padded = self.async_rollout_manager.generate_sequences(reflection_gen_batch_padded)
+                        reflection_output = unpad_dataproto(reflection_output_padded, pad_size=reflection_pad_size)
+                        reflection_gen_batch = unpad_dataproto(reflection_gen_batch_padded, pad_size=reflection_pad_size)
+                        reflection_output.meta_info["validate"] = True
 
-                    reflection_correct = _extract_correct(reflection_reward_extra_info, reflection_score_list)
-                    reflection_correct_list.append(reflection_correct)
-                    # Track per-sample transition labels for reflection logging.
-                    base_correct = base_correct_list[-1] if base_correct_list else None
-                    if base_correct is not None:
-                        transitions = []
-                        for b, r in zip(base_correct.tolist(), reflection_correct.tolist(), strict=True):
-                            if b and r:
-                                transitions.append("good_to_good")
-                            elif b and not r:
-                                transitions.append("good_to_bad")
-                            elif (not b) and r:
-                                transitions.append("bad_to_good")
+                        reward_extra_keys = set(reflection_output.meta_info.get("reward_extra_keys", []))
+                        merged_non_tensor = dict(reflection_output.non_tensor_batch)
+                        for key, value in reflection_gen_batch.non_tensor_batch.items():
+                            if key not in reward_extra_keys and key not in merged_non_tensor:
+                                merged_non_tensor[key] = value
+                        reflection_output.non_tensor_batch = merged_non_tensor
+                        reflection_output_ids = reflection_output.batch["responses"]
+                        reflection_output_texts = [
+                            self.tokenizer.decode(ids, skip_special_tokens=True) for ids in reflection_output_ids
+                        ]
+                        reflection_outputs.extend(reflection_output_texts)
+                        refl_idx_counter = 0
+                        for orig_idx, is_reflected in zip(batch_indices, in_reflection_set):
+                            if is_reflected and refl_idx_counter < len(reflection_output_texts):
+                                reflection_output_by_idx[orig_idx] = reflection_output_texts[refl_idx_counter]
+                                refl_idx_counter += 1
+                        reflection_input_ids = reflection_output.batch["prompts"]
+                        reflection_input_texts = [
+                            self.tokenizer.decode(ids, skip_special_tokens=True) for ids in reflection_input_ids
+                        ]
+                        reflection_inputs.extend(reflection_input_texts)
+                        reflection_gts.extend(refl_ground_truths)
+                        refl_idx_counter = 0
+                        for orig_idx, is_reflected in zip(batch_indices, in_reflection_set):
+                            if is_reflected and refl_idx_counter < len(reflection_input_texts):
+                                reflection_input_by_idx[orig_idx] = reflection_input_texts[refl_idx_counter]
+                                refl_idx_counter += 1
+
+                        reflection_result = self.val_reward_fn(reflection_output, return_dict=True)
+                        reflection_reward_tensor = reflection_result["reward_tensor"]
+                        reflection_score_list = reflection_reward_tensor.sum(-1).cpu().tolist()
+                        reflection_scores.extend(reflection_score_list)
+
+                        reflection_reward_extra_info = reflection_result.get("reward_extra_info", {})
+                        reflection_reward_extra_infos_dict["reward"].extend(reflection_score_list)
+                        for key, values in reflection_reward_extra_info.items():
+                            if key not in reflection_reward_extra_infos_dict:
+                                reflection_reward_extra_infos_dict[key] = []
+                            if isinstance(values, np.ndarray):
+                                reflection_reward_extra_infos_dict[key].extend(values.tolist())
                             else:
-                                transitions.append("bad_to_bad")
-                        reflection_transitions.extend(transitions)
-                    reflection_data_sources = reflection_output.non_tensor_batch.get(
-                        "data_source", ["unknown"] * len(reflection_score_list)
-                    )
-                    reflection_data_source_lst.append(
-                        np.array([f"{ds}_id_reflection" for ds in reflection_data_sources], dtype=object)
-                    )
+                                reflection_reward_extra_infos_dict[key].extend(
+                                    values if isinstance(values, list) else [values]
+                                )
+
+                        reflection_correct = _extract_correct(reflection_reward_extra_info, reflection_score_list)
+                        reflection_correct_list.append(reflection_correct)
+                        refl_idx_counter = 0
+                        for orig_idx, is_reflected in zip(batch_indices, in_reflection_set):
+                            if is_reflected and refl_idx_counter < len(reflection_score_list):
+                                reflection_score_by_idx[orig_idx] = reflection_score_list[refl_idx_counter]
+                                if refl_idx_counter < len(reflection_correct):
+                                    reflection_correct_by_idx[orig_idx] = int(reflection_correct[refl_idx_counter])
+                                refl_idx_counter += 1
+                        refl_base_correct = [base_correct[i] for i, val in enumerate(in_reflection_set) if val]
+                        if refl_base_correct:
+                            transitions = []
+                            for b, r in zip(refl_base_correct, reflection_correct.tolist(), strict=True):
+                                if b and r:
+                                    transitions.append("good_to_good")
+                                elif b and not r:
+                                    transitions.append("good_to_bad")
+                                elif (not b) and r:
+                                    transitions.append("bad_to_good")
+                                else:
+                                    transitions.append("bad_to_bad")
+                            reflection_transitions.extend(transitions)
+                        reflection_data_sources = reflection_output.non_tensor_batch.get(
+                            "data_source", ["unknown"] * len(reflection_score_list)
+                        )
+                        reflection_data_source_lst.append(
+                            np.array([f"{ds}_id_reflection" for ds in reflection_data_sources], dtype=object)
+                        )
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
         if enable_reflection_val and reflection_inputs:
@@ -1088,6 +1439,80 @@ class RayPPOTrainer:
                     dump_path=reflection_dump_dir,
                 )
 
+        # === EVAL MODE: Save metadata and extended generations ===
+        # Support explicit eval_outputs_dir config, otherwise use default_local_dir/eval_outputs
+        eval_save_dir = self.config.trainer.get("eval_outputs_dir", None)
+        if eval_save_dir is None:
+            eval_save_dir = self.config.trainer.default_local_dir
+            if eval_save_dir:
+                eval_save_dir = os.path.join(eval_save_dir, "eval_outputs")
+
+        if eval_save_dir:
+            os.makedirs(eval_save_dir, exist_ok=True)
+
+            # 1. Save metadata: correct/incorrect (0/1) + difficulty level for all MATH500 problems
+            base_correct_flat = np.concatenate(base_correct_list, axis=0) if base_correct_list else np.array([], dtype=bool)
+            reflection_correct_flat = np.concatenate(reflection_correct_list, axis=0) if reflection_correct_list else np.array([], dtype=bool)
+            metadata_records = []
+            for i in range(len(sample_scores)):
+                is_correct = int(base_correct_flat[i]) if i < len(base_correct_flat) else int(sample_scores[i] >= 1.0)
+                difficulty = sample_difficulty_levels[i] if i < len(sample_difficulty_levels) else 3
+                data_source = data_source_by_idx.get(i, "unknown")
+                record = {
+                    "problem_idx": i,
+                    "data_source": data_source,
+                    "is_correct": is_correct,
+                    "difficulty_level": difficulty,
+                    "base_score": sample_scores[i] if i < len(sample_scores) else 0.0,
+                }
+                if i in reflection_score_by_idx:
+                    record["reflection_score"] = reflection_score_by_idx[i]
+                metadata_records.append(record)
+            metadata_path = os.path.join(eval_save_dir, f"metadata_step{self.global_steps}.jsonl")
+            with open(metadata_path, "w") as f:
+                for record in metadata_records:
+                    f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
+            with_reflection = sum(1 for r in metadata_records if "reflection_score" in r)
+            print(f"Saved metadata to {metadata_path}: {len(metadata_records)} samples, {with_reflection} with reflection")
+
+            # 2. Initialize fixed 128 sample indices (same every val step)
+            if self._val_generation_log_indices is None:
+                rng = np.random.RandomState(VAL_GENERATION_LOG_SEED)
+                n_samples = min(VAL_GENERATION_LOG_SIZE, len(sample_inputs))
+                self._val_generation_log_indices = sorted(rng.choice(len(sample_inputs), size=n_samples, replace=False).tolist())
+                print(f"Initialized {n_samples} fixed sample indices for detailed generation logging")
+
+            extended_gen_records = []
+            for idx in self._val_generation_log_indices:
+                if idx >= len(sample_inputs):
+                    continue
+                record = {
+                    "sample_idx": idx,
+                    "data_source": data_source_by_idx.get(idx, "unknown"),
+                    "difficulty_level": sample_difficulty_levels[idx] if idx < len(sample_difficulty_levels) else 3,
+                    "ground_truth": sample_gts[idx] if idx < len(sample_gts) else None,
+                    "base_input": sample_inputs[idx] if idx < len(sample_inputs) else "",
+                    "base_output": sample_outputs[idx] if idx < len(sample_outputs) else "",
+                    "base_score": sample_scores[idx] if idx < len(sample_scores) else 0.0,
+                    "base_correct": int(base_correct_flat[idx]) if idx < len(base_correct_flat) else 0,
+                }
+                if idx in reflection_score_by_idx:
+                    record["id_reflection_score"] = reflection_score_by_idx[idx]
+                if idx in reflection_input_by_idx:
+                    record["id_reflection_input"] = reflection_input_by_idx[idx]
+                if idx in reflection_output_by_idx:
+                    record["id_reflection_output"] = reflection_output_by_idx[idx]
+                if idx in reflection_correct_by_idx:
+                    record["id_reflection_correct"] = reflection_correct_by_idx[idx]
+                extended_gen_records.append(record)
+
+            extended_gen_path = os.path.join(eval_save_dir, f"extended_generations_step{self.global_steps}.jsonl")
+            with open(extended_gen_path, "w") as f:
+                for record in extended_gen_records:
+                    f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
+            with_reflection = sum(1 for r in extended_gen_records if "id_reflection_score" in r)
+            print(f"Saved {len(extended_gen_records)} extended generations to {extended_gen_path}: {with_reflection} with reflection")
+
         for key_info, lst in reward_extra_infos_dict.items():
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
@@ -1096,178 +1521,42 @@ class RayPPOTrainer:
                 f"{key_info}: {len(lst)=}, {len(reflection_scores)=}"
             )
 
-        if enable_reflection_val and self.ood_base_answers_df is not None:
-            ood_metadata = []
-            for bench_name, sample_size in VAL_SAMPLE_SIZES.items():
-                bench_df = self.ood_base_answers_df[self.ood_base_answers_df["benchmark"] == bench_name].copy()
-                if sample_size and len(bench_df) > sample_size:
-                    bench_df = bench_df.sample(n=sample_size, random_state=VAL_SAMPLE_RANDOM_SEED).reset_index(drop=True)
-
-                for _, row in bench_df.iterrows():
-                    ood_metadata.append(
-                        {
-                            "benchmark": row["benchmark"],
-                            "problem_idx": row.get("problem_idx", None),
-                            "ground_truth": row["ground_truth"],
-                            "raw_question": row["raw_question"],
-                            "base_response": row["response"],
-                            "base_score": float(row["score"]),
-                        }
-                    )
-
-            if ood_metadata:
-                reflection_prompts = []
-                reward_models = []
-                data_sources = []
-                for meta in ood_metadata:
-                    reflection_prompts.append(
-                        [
-                            {"role": "user", "content": meta["raw_question"]},
-                            {"role": "assistant", "content": meta["base_response"]},
-                            {"role": "user", "content": self.reflection_instruction},
-                        ]
-                    )
-                    reward_models.append({"ground_truth": meta["ground_truth"]})
-                    data_sources.append(meta["benchmark"])
-
-                ood_non_tensor_batch = {
-                    "raw_prompt": np.array(reflection_prompts, dtype=object),
-                    "reward_model": np.array(reward_models, dtype=object),
-                    "data_source": np.array(data_sources, dtype=object),
-                    "uid": np.array([str(uuid.uuid4()) for _ in range(len(reflection_prompts))], dtype=object),
-                }
-                self._mark_extra_info_reflection(ood_non_tensor_batch, batch_size=len(reflection_prompts))
-                ood_gen_batch = DataProto(batch=None, non_tensor_batch=ood_non_tensor_batch)
-                ood_gen_batch.meta_info = {
-                    "eos_token_id": self.tokenizer.eos_token_id,
-                    "pad_token_id": self.tokenizer.pad_token_id,
-                    "recompute_log_prob": False,
-                    "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
-                    "validate": True,
-                    "global_steps": self.global_steps,
-                }
-
-                size_divisor = (
-                    self.actor_rollout_wg.world_size
-                    if not self.async_rollout_mode
-                    else self.config.actor_rollout_ref.rollout.agent.num_workers
-                )
-                ood_gen_batch_padded, ood_pad_size = pad_dataproto_to_divisor(ood_gen_batch, size_divisor)
-                if not self.async_rollout_mode:
-                    ood_output_padded = self.actor_rollout_wg.generate_sequences(ood_gen_batch_padded)
-                else:
-                    ood_output_padded = self.async_rollout_manager.generate_sequences(ood_gen_batch_padded)
-                ood_output = unpad_dataproto(ood_output_padded, pad_size=ood_pad_size)
-                ood_gen_batch = unpad_dataproto(ood_gen_batch_padded, pad_size=ood_pad_size)
-                ood_output.meta_info["validate"] = True
-
-                reward_extra_keys = set(ood_output.meta_info.get("reward_extra_keys", []))
-                merged_non_tensor = dict(ood_output.non_tensor_batch)
-                for key, value in ood_gen_batch.non_tensor_batch.items():
-                    if key not in reward_extra_keys and key not in merged_non_tensor:
-                        merged_non_tensor[key] = value
-                ood_output.non_tensor_batch = merged_non_tensor
-
-                if self.val_reward_fn is None:
-                    raise ValueError("val_reward_fn must be provided for validation.")
-                ood_result = self.val_reward_fn(ood_output, return_dict=True)
-                ood_reward_tensor = ood_result["reward_tensor"]
-                ood_scores = ood_reward_tensor.sum(-1).cpu().tolist()
-
-                ood_reflection_scores_list.extend(ood_scores)
-                ood_reflection_reward_extra_infos_dict["reward"].extend(ood_scores)
-                ood_reward_extra_info = ood_result.get("reward_extra_info", {})
-                for key, values in ood_reward_extra_info.items():
-                    if key not in ood_reflection_reward_extra_infos_dict:
-                        ood_reflection_reward_extra_infos_dict[key] = []
-                    if isinstance(values, np.ndarray):
-                        ood_reflection_reward_extra_infos_dict[key].extend(values.tolist())
-                    else:
-                        ood_reflection_reward_extra_infos_dict[key].extend(values if isinstance(values, list) else [values])
-
-                ood_batch_data_sources = ood_output.non_tensor_batch.get("data_source", ["unknown"] * len(ood_scores))
-                ood_reflection_data_source_lst.append(
-                    np.array([f"{ds}_ood_reflection" for ds in ood_batch_data_sources], dtype=object)
-                )
-
-                for i, meta in enumerate(ood_metadata):
-                    problem_idx = meta["problem_idx"] if meta["problem_idx"] is not None else i
-                    ood_reflection_sample_uids.append(f"OOD_{meta['benchmark']}_{problem_idx}")
-                    ood_base_scores_list.append(meta["base_score"])
-
-        for key_info, lst in ood_reflection_reward_extra_infos_dict.items():
-            assert len(lst) == 0 or len(lst) == len(ood_reflection_scores_list), (
-                f"{key_info}: {len(lst)=}, {len(ood_reflection_scores_list)=}"
-            )
-
         transition_metrics: dict[str, float] = {}
-        if enable_reflection_val and reflection_reward_extra_infos_dict and reflection_scores:
-            base_scores = reward_extra_infos_dict.get("reward", [])
-            reflection_score_vals = reflection_reward_extra_infos_dict.get("reward", [])
-            if len(base_scores) == len(reflection_score_vals) and base_scores:
-                good_to_good = sum(
-                    1 for b, r in zip(base_scores, reflection_score_vals, strict=True) if b >= 1.0 and r >= 1.0
-                )
-                good_to_bad = sum(
-                    1 for b, r in zip(base_scores, reflection_score_vals, strict=True) if b >= 1.0 and r < 1.0
-                )
-                bad_to_good = sum(
-                    1 for b, r in zip(base_scores, reflection_score_vals, strict=True) if b < 1.0 and r >= 1.0
-                )
-                bad_to_bad = sum(
-                    1 for b, r in zip(base_scores, reflection_score_vals, strict=True) if b < 1.0 and r < 1.0
-                )
+        if enable_reflection_val and reflection_transitions and reflection_scores:
+            # reflection_transitions was computed correctly per-batch during validation loop
+            # Use it directly instead of recomputing from mismatched aggregated lists
+            good_to_good = sum(1 for t in reflection_transitions if t == "good_to_good")
+            good_to_bad = sum(1 for t in reflection_transitions if t == "good_to_bad")
+            bad_to_good = sum(1 for t in reflection_transitions if t == "bad_to_good")
+            bad_to_bad = sum(1 for t in reflection_transitions if t == "bad_to_bad")
 
-                num_good = sum(1 for b in base_scores if b >= 1.0)
-                num_bad = sum(1 for b in base_scores if b < 1.0)
+            num_good = good_to_good + good_to_bad
+            num_bad = bad_to_good + bad_to_bad
 
-                transition_metrics = {
-                    "val-aux/id_transition_good_to_good": good_to_good / num_good if num_good > 0 else 0.0,
-                    "val-aux/id_transition_good_to_bad": good_to_bad / num_good if num_good > 0 else 0.0,
-                    "val-aux/id_transition_bad_to_good": bad_to_good / num_bad if num_bad > 0 else 0.0,
-                    "val-aux/id_transition_bad_to_bad": bad_to_bad / num_bad if num_bad > 0 else 0.0,
-                }
+            transition_metrics = {
+                "val-aux/id_transition_good_to_good": good_to_good / num_good if num_good > 0 else 0.0,
+                "val-aux/id_transition_good_to_bad": good_to_bad / num_good if num_good > 0 else 0.0,
+                "val-aux/id_transition_bad_to_good": bad_to_good / num_bad if num_bad > 0 else 0.0,
+                "val-aux/id_transition_bad_to_bad": bad_to_bad / num_bad if num_bad > 0 else 0.0,
+            }
 
-        if ood_base_scores_list and ood_reflection_scores_list and len(ood_base_scores_list) == len(ood_reflection_scores_list):
-            good_to_good = sum(
-                1 for b, r in zip(ood_base_scores_list, ood_reflection_scores_list, strict=True) if b >= 1.0 and r >= 1.0
-            )
-            good_to_bad = sum(
-                1 for b, r in zip(ood_base_scores_list, ood_reflection_scores_list, strict=True) if b >= 1.0 and r < 1.0
-            )
-            bad_to_good = sum(
-                1 for b, r in zip(ood_base_scores_list, ood_reflection_scores_list, strict=True) if b < 1.0 and r >= 1.0
-            )
-            bad_to_bad = sum(
-                1 for b, r in zip(ood_base_scores_list, ood_reflection_scores_list, strict=True) if b < 1.0 and r < 1.0
-            )
-
-            num_good = sum(1 for b in ood_base_scores_list if b >= 1.0)
-            num_bad = sum(1 for b in ood_base_scores_list if b < 1.0)
-
-            transition_metrics.update(
-                {
-                    "val-aux/ood_transition_good_to_good": good_to_good / num_good if num_good > 0 else 0.0,
-                    "val-aux/ood_transition_good_to_bad": good_to_bad / num_good if num_good > 0 else 0.0,
-                    "val-aux/ood_transition_bad_to_good": bad_to_good / num_bad if num_bad > 0 else 0.0,
-                    "val-aux/ood_transition_bad_to_bad": bad_to_bad / num_bad if num_bad > 0 else 0.0,
-                }
-            )
-
-        all_data_source_lists = data_source_lst + reflection_data_source_lst + ood_reflection_data_source_lst
+        all_data_source_lists = data_source_lst + reflection_data_source_lst
         all_data_sources = np.concatenate(all_data_source_lists, axis=0) if all_data_source_lists else np.array([], dtype=object)
-        all_sample_uids = sample_inputs + reflection_inputs + ood_reflection_sample_uids
+        all_sample_uids = sample_inputs + reflection_inputs
 
         all_reward_extra_infos_dict: dict[str, list] = defaultdict(list)
         for key, values in reward_extra_infos_dict.items():
             all_reward_extra_infos_dict[key].extend(values)
         for key, values in reflection_reward_extra_infos_dict.items():
             all_reward_extra_infos_dict[key].extend(values)
-        for key, values in ood_reflection_reward_extra_infos_dict.items():
-            all_reward_extra_infos_dict[key].extend(values)
 
         all_reward_extra_infos_dict.pop("score_base", None)
         all_reward_extra_infos_dict.pop("score_reflection", None)
+
+        expected_len = len(all_data_sources)
+        keys_to_remove = [k for k, v in all_reward_extra_infos_dict.items() if len(v) != expected_len]
+        for k in keys_to_remove:
+            all_reward_extra_infos_dict.pop(k, None)
 
         data_src2var2metric2val = process_validation_metrics(all_data_sources, all_sample_uids, all_reward_extra_infos_dict)
         metric_dict: dict[str, float] = {}
@@ -1302,13 +1591,10 @@ class RayPPOTrainer:
 
         id_base_acc_per_dataset: dict[str, float] = {}
         id_reflection_acc_per_dataset: dict[str, float] = {}
-        ood_reflection_acc_per_dataset: dict[str, float] = {}
         for key, val in metric_dict.items():
             if not key.startswith("val-core/") or not key.endswith("/mean@1"):
                 continue
 
-            # Key format is: val-core/{data_source}/{var_name}/{metric_name}
-            # Since `data_source` may contain '/', parse from the right.
             try:
                 rest = key[len("val-core/") :]
                 data_source, _var_name, _metric_name = rest.rsplit("/", 2)
@@ -1319,8 +1605,6 @@ class RayPPOTrainer:
                 id_base_acc_per_dataset[data_source[: -len("_id_base")]] = float(val) * 100
             elif data_source.endswith("_id_reflection"):
                 id_reflection_acc_per_dataset[data_source[: -len("_id_reflection")]] = float(val) * 100
-            elif data_source.endswith("_ood_reflection"):
-                ood_reflection_acc_per_dataset[data_source[: -len("_ood_reflection")]] = float(val) * 100
             else:
                 id_base_acc_per_dataset[data_source] = float(val) * 100
 
@@ -1331,7 +1615,6 @@ class RayPPOTrainer:
             avg_id_base = sum(id_base_acc_per_dataset.values()) / len(id_base_acc_per_dataset)
             print(f"  {'Average':<30} {avg_id_base:>6.2f}%")
             metric_dict["val-core/avg_id_base_acc"] = avg_id_base / 100.0
-            # Backward-compatible alias.
             metric_dict["val-core/avg_base_acc"] = avg_id_base / 100.0
 
         if id_reflection_acc_per_dataset:
@@ -1341,35 +1624,15 @@ class RayPPOTrainer:
             avg_id_refl = sum(id_reflection_acc_per_dataset.values()) / len(id_reflection_acc_per_dataset)
             print(f"  {'Average':<30} {avg_id_refl:>6.2f}%")
             metric_dict["val-core/avg_id_reflection_acc"] = avg_id_refl / 100.0
-            # Backward-compatible alias.
             metric_dict["val-core/avg_reflection_acc"] = avg_id_refl / 100.0
-
-        if ood_reflection_acc_per_dataset:
-            print("\nOOD Reflection acc@1 per dataset:")
-            for ds, acc in sorted(ood_reflection_acc_per_dataset.items()):
-                print(f"  {ds:<30} {acc:>6.2f}%")
-            avg_ood_refl = sum(ood_reflection_acc_per_dataset.values()) / len(ood_reflection_acc_per_dataset)
-            print(f"  {'Average':<30} {avg_ood_refl:>6.2f}%")
-            metric_dict["val-core/avg_ood_reflection_acc"] = avg_ood_refl / 100.0
-
-        if id_reflection_acc_per_dataset and ood_reflection_acc_per_dataset:
-            avg_id_refl = sum(id_reflection_acc_per_dataset.values()) / len(id_reflection_acc_per_dataset)
-            avg_ood_refl = sum(ood_reflection_acc_per_dataset.values()) / len(ood_reflection_acc_per_dataset)
-            metric_dict["val-core/avg_combined_reflection_acc"] = (avg_id_refl + avg_ood_refl) / 200.0
 
         if transition_metrics:
             print("\nTransition metrics:")
             id_transitions = {k: v for k, v in transition_metrics.items() if "id_transition" in k}
-            ood_transitions = {k: v for k, v in transition_metrics.items() if "ood_transition" in k}
             if id_transitions:
                 print("  I.D. Reflection:")
                 for tkey, tval in sorted(id_transitions.items()):
                     metric_name = tkey.split("/")[-1].replace("id_transition_", "")
-                    print(f"    {metric_name:<28} {tval*100:>6.2f}%")
-            if ood_transitions:
-                print("  OOD Reflection:")
-                for tkey, tval in sorted(ood_transitions.items()):
-                    metric_name = tkey.split("/")[-1].replace("ood_transition_", "")
                     print(f"    {metric_name:<28} {tval*100:>6.2f}%")
 
         print(f"{'='*80}\n")
@@ -2098,7 +2361,7 @@ class RayPPOTrainer:
         self.best_val_metric = -float("inf")
         self.best_val_step = -1
         self.best_model_metric_key = self.config.trainer.get(
-            "best_model_metric_key", "val-core/avg_combined_reflection_acc"
+            "best_model_metric_key", "val-core/avg_id_base_acc"
         )
 
         # load checkpoint before doing anything
@@ -2140,6 +2403,7 @@ class RayPPOTrainer:
 
         def run_step(batch: DataProto, gen_batch: DataProto, *, repeat_times: int, allow_reflection: bool):
             nonlocal prev_step_profile, curr_step_profile, next_step_profile, last_val_metrics
+            nonlocal dapo_accumulated_batch, dapo_num_prompt_in_batch, dapo_num_gen_batches
             metrics = {}
             timing_raw = {}
 
@@ -2170,11 +2434,12 @@ class RayPPOTrainer:
                     timing_raw.update(gen_batch_output.meta_info["timing"])
                     gen_batch_output.meta_info.pop("timing", None)
 
-                if (
-                    allow_reflection
-                    and self.use_reflection
-                    and self.config.algorithm.adv_estimator == AdvantageEstimator.GRPO
-                ):
+                # Prepare reflection data if reflection is enabled
+                # Reflection can work with any advantage estimator, not just GRPO
+                if allow_reflection and self.use_reflection:
+                    num_prompts = len(np.unique(batch.non_tensor_batch["uid"])) if "uid" in batch.non_tensor_batch else len(batch)
+                    dapo_status = "DAPO" if self.dapo_enabled else "GRPO"
+                    print(f"[{dapo_status} Base Step] Generated {len(batch)} base rollouts (prompts={num_prompts}, repeat_times={repeat_times})")
                     reflection_base_batch = batch.repeat(repeat_times=repeat_times, interleave=True)
                     reflection_gen_source = gen_batch_output
 
@@ -2317,46 +2582,20 @@ class RayPPOTrainer:
                         batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
                     # Select reflection prompts once correctness is available.
+                    stored_reflection_data = None  # Initialize for variance-based selection after actor update
                     if reflection_base_batch is not None and reflection_gen_source is not None:
-                        is_correct = None
-                        for key in ("acc", "is_correct", "correct"):
-                            if key in batch.non_tensor_batch:
-                                is_correct = np.asarray(batch.non_tensor_batch[key], dtype=bool).reshape(-1)
-                                break
-                        if is_correct is None:
-                            reward_scores = batch.batch["token_level_scores"]
-                            if reward_scores.ndim > 1:
-                                reward_scores = reward_scores.sum(dim=-1)
-                            is_correct = (reward_scores.detach().cpu().numpy() > 0).reshape(-1)
-                        if len(is_correct) == len(batch) and "uid" in batch.non_tensor_batch:
-                            response_mask = batch.batch["response_mask"] if "response_mask" in batch.batch.keys() else None
-                            reflection_seed = int(self.config.data.get("seed") or 0)
-                            selection_mode = str(
-                                self.config.algorithm.get("reflection_selection_mode", "wrong_first")
+                        # Use helper method to prepare reflection data
+                        stored_reflection_data = self._prepare_reflection_selection_data(
+                            batch, reflection_base_batch, reflection_gen_source, repeat_times
+                        )
+
+                        # If not variance-based, do immediate selection
+                        if stored_reflection_data is None:
+                            selected_base, selected_gen = self._select_reflection_candidates(
+                                batch, reflection_base_batch, reflection_gen_source, repeat_times
                             )
-                            num_select = len(batch) // max(1, repeat_times)
-                            reflection_indices = select_reflection_indices(
-                                batch.non_tensor_batch["uid"],
-                                batch.batch["responses"],
-                                is_correct,
-                                num_select=num_select,
-                                response_mask=response_mask,
-                                seed=reflection_seed,
-                                step=self.global_steps,
-                                selection_mode=selection_mode,
-                            )
-                            if reflection_indices:
-                                reflection_base_batch = reflection_base_batch.select_idxs(reflection_indices)
-                                reflection_gen_source = reflection_gen_source.select_idxs(reflection_indices)
-                                self._mark_extra_info_reflection(
-                                    reflection_base_batch.non_tensor_batch, batch_size=len(reflection_base_batch)
-                                )
-                                reflection_gen_batch = self._build_reflection_gen_batch(
-                                    reflection_gen_source,
-                                    base_non_tensor_batch=reflection_base_batch.non_tensor_batch,
-                                )
-                                if reflection_gen_batch is not None:
-                                    pending_reflection = (reflection_base_batch, reflection_gen_batch)
+                            if selected_base is not None and selected_gen is not None:
+                                pending_reflection = (selected_base, selected_gen)
 
                     # compute rewards. apply_kl_penalty if available
                     if self.config.algorithm.use_kl_in_reward:
@@ -2366,6 +2605,54 @@ class RayPPOTrainer:
                         metrics.update(kl_metrics)
                     else:
                         batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
+
+                    step_type = "Reflection" if not allow_reflection else "Base"
+
+                    # DAPO filtering: Decoupled from reflection
+                    # DAPO filtering can work independently of reflection (vanilla DAPO)
+                    # DAPO filtering can also work with reflection (DAPO-based RefPo)
+                    if self.dapo_enabled:
+                        num_prompts = len(np.unique(batch.non_tensor_batch["uid"])) if "uid" in batch.non_tensor_batch else len(batch)
+                        print(f"[DAPO Filter {step_type}] BEFORE filter: batch={len(batch)} prompts={num_prompts}")
+                        filtered_batch, filter_stats = self._apply_dapo_filter(batch, metric_name=self.dapo_metric)
+                        print(f"[DAPO Filter {step_type}] AFTER filter: kept={filter_stats['kept_prompts']}/{filter_stats['total_prompts']} prompts, "
+                              f"filtered={filter_stats['filtered_prompts']}, traj={filter_stats['kept_trajectories']}/{filter_stats['total_trajectories']}")
+                        dapo_num_gen_batches += 1
+                        if filtered_batch is not None and len(filtered_batch) > 0:
+                            if dapo_accumulated_batch is None:
+                                dapo_accumulated_batch = filtered_batch
+                            else:
+                                for key in ["global_token_num"]:
+                                    dapo_accumulated_batch.meta_info.pop(key, None)
+                                    filtered_batch.meta_info.pop(key, None)
+                                dapo_accumulated_batch = DataProto.concat([dapo_accumulated_batch, filtered_batch])
+                            dapo_num_prompt_in_batch += filter_stats["kept_prompts"]
+                        prompt_bsz = self.config.data.train_batch_size
+                        traj_bsz = prompt_bsz * repeat_times
+                        metrics["dapo/num_gen_batches"] = dapo_num_gen_batches
+                        metrics["dapo/accumulated_prompts"] = dapo_num_prompt_in_batch
+                        if dapo_num_prompt_in_batch < prompt_bsz:
+                            max_gen_batches = self.dapo_max_gen_batches
+                            print(f"[DAPO Filter {step_type}] Need more: {dapo_num_prompt_in_batch}/{prompt_bsz} prompts, gen_batches={dapo_num_gen_batches}")
+                            if max_gen_batches <= 0 or dapo_num_gen_batches < max_gen_batches:
+                                return None, False
+                            else:
+                                print(f"[DAPO Filter {step_type}] ERROR: Reached max_gen_batches={max_gen_batches} but only "
+                                              f"{dapo_num_prompt_in_batch}/{prompt_bsz} prompts.")
+                                dapo_accumulated_batch = None
+                                dapo_num_prompt_in_batch = 0
+                                dapo_num_gen_batches = 0
+                                pending_reflection = None
+                                return None, True
+                        print(f"[DAPO Filter {step_type}] Training with {traj_bsz} trajectories ({prompt_bsz} prompts)")
+                        batch = dapo_accumulated_batch[:traj_bsz]
+                        batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+                        dapo_accumulated_batch = None
+                        dapo_num_prompt_in_batch = 0
+                        dapo_num_gen_batches = 0
+                    else:
+                        mode_str = f"GRPO+Reflection" if self.use_reflection else "Vanilla GRPO"
+                        print(f"[{mode_str} {step_type} Step] Training with {len(batch)} trajectories")
 
                     # Compute rollout correction: IS weights, rejection sampling, and metrics
                     # Only runs in decoupled mode (computes once per batch using stable π_old)
@@ -2411,6 +2698,12 @@ class RayPPOTrainer:
                         actor_output = self._update_actor(batch)
                     actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                     metrics.update(actor_output_metrics)
+
+                # Generate reflections using the UPDATED model (after actor update)
+                if "stored_reflection_data" in locals() and stored_reflection_data is not None:
+                    reflection_result = self._generate_variance_based_reflection(stored_reflection_data, gen_batch_output)
+                    if reflection_result is not None:
+                        pending_reflection = reflection_result
 
                 # Log rollout generations if enabled
                 rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
@@ -2549,6 +2842,10 @@ class RayPPOTrainer:
             return pending_reflection, False
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
+            dapo_accumulated_batch = None
+            dapo_num_prompt_in_batch = 0
+            dapo_num_gen_batches = 0
+
             for batch_dict in self.train_dataloader:
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
@@ -2572,6 +2869,8 @@ class RayPPOTrainer:
                     return
                 if pending_reflection is not None:
                     reflection_batch, reflection_gen_batch = pending_reflection
+                    dapo_status = "DAPO-based" if self.dapo_enabled else "GRPO-based"
+                    print(f"[{dapo_status} Reflection] Starting REFLECTION STEP training with {len(reflection_batch)} base prompts")
                     _, stop_training = run_step(
                         reflection_batch,
                         reflection_gen_batch,
@@ -2580,4 +2879,9 @@ class RayPPOTrainer:
                     )
                     if stop_training:
                         logger.finish()
+                    dapo_accumulated_batch = None
+                    dapo_num_prompt_in_batch = 0
+                    dapo_num_gen_batches = 0
+                    pending_reflection = None
+                    if stop_training:
                         return

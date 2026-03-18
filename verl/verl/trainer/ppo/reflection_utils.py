@@ -129,6 +129,74 @@ def _select_wrong_first(
     return selected
 
 
+def _select_balanced(
+    uids: np.ndarray,
+    is_correct: np.ndarray,
+    response_keys: list[tuple[str, tuple[int, ...], bytes]],
+    rng: np.random.Generator,
+    num_select: int,
+) -> list[int]:
+    indices = np.arange(len(is_correct))
+    correct_indices = indices[is_correct]
+    wrong_indices = indices[~is_correct]
+
+    uid_to_correct: dict[object, list[int]] = {}
+    for idx in correct_indices.tolist():
+        uid_to_correct.setdefault(uids[idx], []).append(int(idx))
+
+    uid_to_wrong: dict[object, list[int]] = {}
+    for idx in wrong_indices.tolist():
+        uid_to_wrong.setdefault(uids[idx], []).append(int(idx))
+
+    uids_with_both = [u for u in uid_to_correct if u in uid_to_wrong]
+    if len(uids_with_both) > 1:
+        uids_with_both = rng.permutation(uids_with_both).tolist()
+
+    half = num_select // 2
+    uids_for_correct = uids_with_both[:half]
+    uids_for_wrong = uids_with_both[half : half + (num_select - half)]
+
+    selected: list[int] = []
+    selected_set: set[int] = set()
+    selected_keys: set[tuple[str, tuple[int, ...], bytes]] = set()
+
+    for uid in uids_for_correct:
+        candidates = uid_to_correct[uid]
+        if len(candidates) > 1:
+            candidates = rng.permutation(candidates).tolist()
+        for idx in candidates:
+            key = response_keys[idx]
+            if key in selected_keys:
+                continue
+            selected.append(int(idx))
+            selected_set.add(int(idx))
+            selected_keys.add(key)
+            break
+
+    for uid in uids_for_wrong:
+        candidates = uid_to_wrong[uid]
+        if len(candidates) > 1:
+            candidates = rng.permutation(candidates).tolist()
+        for idx in candidates:
+            key = response_keys[idx]
+            if key in selected_keys:
+                continue
+            selected.append(int(idx))
+            selected_set.add(int(idx))
+            selected_keys.add(key)
+            break
+
+    if len(selected) < num_select:
+        remaining = [
+            int(idx)
+            for idx in range(len(uids))
+            if int(idx) not in selected_set and response_keys[int(idx)] not in selected_keys
+        ]
+        _select_unique(remaining, response_keys, rng, num_select, selected, selected_set, selected_keys)
+
+    return selected
+
+
 def _select_fair(
     uids: np.ndarray,
     response_keys: list[tuple[str, tuple[int, ...], bytes]],
@@ -173,6 +241,76 @@ def _select_fair(
     return selected
 
 
+def _select_variance_based(
+    uids: np.ndarray,
+    is_correct: np.ndarray,
+    response_keys: list[tuple[str, tuple[int, ...], bytes]],
+    reflection_is_correct: np.ndarray,
+    rng: np.random.Generator,
+    num_select: int,
+    repeat_times: int,
+) -> list[int]:
+    indices = np.arange(len(is_correct))
+
+    uid_to_indices: dict[object, list[int]] = {}
+    for idx in indices:
+        uid_to_indices.setdefault(uids[idx], []).append(int(idx))
+
+    selected: list[int] = []
+    selected_set: set[int] = set()
+    selected_keys: set[tuple[str, tuple[int, ...], bytes]] = set()
+
+    uid_list = list(uid_to_indices.keys())
+    if len(uid_list) > 1:
+        uid_list = rng.permutation(uid_list).tolist()
+
+    for uid in uid_list:
+        if len(selected) >= num_select:
+            break
+
+        candidates = uid_to_indices[uid]
+        if len(candidates) > 1:
+            candidates = rng.permutation(candidates).tolist()
+
+        found = False
+        for candidate_idx in candidates:
+            if candidate_idx in selected_set:
+                continue
+
+            key = response_keys[candidate_idx]
+            if key in selected_keys:
+                continue
+
+            refl_slice = reflection_is_correct[candidate_idx * repeat_times : (candidate_idx + 1) * repeat_times]
+            if len(refl_slice) > 1 and np.std(refl_slice.astype(float)) > 0:
+                selected.append(candidate_idx)
+                selected_set.add(candidate_idx)
+                selected_keys.add(key)
+                found = True
+                break
+
+        if not found and candidates:
+            for candidate_idx in candidates:
+                if candidate_idx in selected_set:
+                    continue
+                key = response_keys[candidate_idx]
+                if key not in selected_keys:
+                    selected.append(candidate_idx)
+                    selected_set.add(candidate_idx)
+                    selected_keys.add(key)
+                    break
+
+    if len(selected) < num_select:
+        remaining = [
+            int(idx)
+            for idx in range(len(uids))
+            if int(idx) not in selected_set and response_keys[int(idx)] not in selected_keys
+        ]
+        _select_unique(remaining, response_keys, rng, num_select, selected, selected_set, selected_keys)
+
+    return selected
+
+
 def select_reflection_indices(
     uids: np.ndarray | list,
     responses: np.ndarray | torch.Tensor | list,
@@ -182,13 +320,17 @@ def select_reflection_indices(
     response_mask: Optional[np.ndarray | torch.Tensor | list] = None,
     seed: int = 0,
     step: int = 0,
-    selection_mode: str = "wrong_first",
+    selection_mode: str = "wrong-first",
+    reflection_is_correct: Optional[np.ndarray | list] = None,
+    repeat_times: int = 1,
 ) -> list[int]:
     """Select indices for reflection with configurable sampling strategy.
 
     Modes:
-        - wrong_first: prioritize wrong responses (current behavior)
+        - wrong-first: prioritize wrong responses
         - fair: uniform across uids, no correctness bias
+        - balanced: half correct, half wrong (1 per uid each)
+        - variance-based: select base rollouts where reflection shows variance
     Duplicate responses (after applying response_mask) are never selected.
     """
 
@@ -210,8 +352,22 @@ def select_reflection_indices(
     rng = np.random.default_rng(_mix_seed(int(seed), int(step)))
 
     mode = str(selection_mode).lower()
-    if mode in {"wrong_first", "wrong-first"}:
+    if mode in {"wrong-first", "wrong_first"}:
         return _select_wrong_first(uids_np, is_correct_np, response_keys, rng, num_select)
-    if mode in {"fair", "uniform"}:
+    if mode in {"uniform"}:
         return _select_fair(uids_np, response_keys, rng, num_select)
+    if mode in {"balanced"}:
+        return _select_balanced(uids_np, is_correct_np, response_keys, rng, num_select)
+    if mode in {"variance-based", "variance_based"}:
+        if reflection_is_correct is None:
+            raise ValueError("reflection_is_correct required for variance-based mode")
+        return _select_variance_based(
+            uids_np,
+            is_correct_np,
+            response_keys,
+            _as_numpy(reflection_is_correct).astype(bool),
+            rng,
+            num_select,
+            repeat_times,
+        )
     raise ValueError(f"Unknown reflection selection mode: {selection_mode}")

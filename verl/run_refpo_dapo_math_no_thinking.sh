@@ -4,10 +4,8 @@ source $(conda info --base)/etc/profile.d/conda.sh
 conda activate verl
 
 export WANDB_ENTITY=difanjiao
-export WANDB_PROJECT=grpo-math
-# offline mode
+export WANDB_PROJECT=reflection-grpo-math-final
 export WANDB_MODE=offline
-export WANDB_API_KEY=f510b3737ade928e3e94556e9fae86fcbd716dc2
 ## For online logging, set `WANDB_API_KEY` in your environment.
 
 set -x
@@ -27,48 +25,54 @@ B=32
 VAL_B=512
 N=8
 L=3000
-NAME=grpo_math_baseline_Qwen3-4B-Instruct-2507
+NAME=dapo_math_baseline_Qwen3-4B-Instruct-2507
+# NAME=grpo_math_refpo_no_thinking_Qwen3-4B-Instruct-2507_uniform
 DEFAULT_CKPT_ROOT="/data1/qianfeng/ckpts"
 DEFAULT_RAY_TMPDIR="/data1/qianfeng/ray"
 DEFAULT_TMPDIR="/data1/qianfeng/tmp"
+DEFAULT_WANDB_DIR="/data1/qianfeng/wandb"
+DEFAULT_EVAL_OUTPUTS_DIR="/data1/qianfeng/eval_outputs"
 CKPT_ROOT=${CKPT_ROOT:-"${DEFAULT_CKPT_ROOT}"}
 RAY_TMPDIR=${RAY_TMPDIR:-"${DEFAULT_RAY_TMPDIR}"}
 TMPDIR=${TMPDIR:-"${DEFAULT_TMPDIR}"}
+WANDB_DIR=${WANDB_DIR:-"${DEFAULT_WANDB_DIR}"}
+EVAL_OUTPUTS_DIR=${EVAL_OUTPUTS_DIR:-"${DEFAULT_EVAL_OUTPUTS_DIR}"}
 export RAY_TMPDIR
 export TMPDIR
+export WANDB_DIR
 # Ray memory / spilling controls (host RAM + object store).
 RAY_OBJECT_STORE_GB=${RAY_OBJECT_STORE_GB:-64}
 RAY_OBJECT_STORE_BYTES=$((RAY_OBJECT_STORE_GB * 1024 * 1024 * 1024))
 RAY_MEMORY_USAGE_THRESHOLD=${RAY_MEMORY_USAGE_THRESHOLD:-0.99}
 export RAY_memory_usage_threshold="${RAY_MEMORY_USAGE_THRESHOLD}"
-# make directories if not exist
-mkdir -p "${CKPT_ROOT}" "${RAY_TMPDIR}" "${TMPDIR}"
 TRAINER_DEFAULT_LOCAL_DIR="${CKPT_ROOT}/${NAME}"
-OOD_BASE_ANSWERS_PATH="${REPO_ROOT}/math_eval/ood_traces/qwen3-30b-a3b/base_answers.parquet"
+TRAINER_EVAL_OUTPUTS_DIR="${EVAL_OUTPUTS_DIR}/${NAME}"
 VAL_FILE=${VAL_FILE:-"$SCRATCH_DIR/math_combined/test.parquet"}
-mkdir -p "${TRAINER_DEFAULT_LOCAL_DIR}" "${RAY_TMPDIR}"
-REFLECTION_STEPS=${REFLECTION_STEPS:-0}
+mkdir -p "${TRAINER_DEFAULT_LOCAL_DIR}" "${TRAINER_EVAL_OUTPUTS_DIR}" "${RAY_TMPDIR}" "${TMPDIR}" "${WANDB_DIR}"
 # vLLM KV cache sizing. Higher values can OOM when combined with large max_num_batched_tokens / long context.
-GPU_UTIL=${GPU_UTIL:-0.4}
+GPU_UTIL=${GPU_UTIL:-0.5}
 # vLLM uses this to size/compile some buffers; too large can trigger CUDA OOM (e.g. 40000 -> ~1.45GiB temp buf).
-MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-20000}
-VISIBLE_DEVICES=${VISIBLE_DEVICES:-0,1}
+MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-40000}
+VISIBLE_DEVICES=${VISIBLE_DEVICES:-2,3}
 SAVE_FREQ=${SAVE_FREQ:-10}
 TEST_FREQ=${TEST_FREQ:-10}
-RESUME_MODE=${RESUME_MODE:-auto}
+RESUME_MODE=${RESUME_MODE:-disable}
 ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-False}
 ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-False}
 ENABLE_ACTIVATION_OFFLOAD=${ENABLE_ACTIVATION_OFFLOAD:-False}
-AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-2}
+AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-16}
 REWARD_USE_REWARD_LOOP=${REWARD_USE_REWARD_LOOP:-False}
 
 CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES} PYTHONUNBUFFERED=1 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.norm_adv_by_std_in_grpo=False \
     algorithm.use_kl_in_reward=False \
-    +algorithm.reflection.steps=${REFLECTION_STEPS} \
+    +algorithm.reflection.steps=0 \
     +algorithm.reflection.validate=True \
-    +algorithm.reflection.ood_base_answers_path="${OOD_BASE_ANSWERS_PATH}" \
+    ++algorithm.reflection_selection_mode=uniform \
+    +algorithm.filter_groups.enable=${DAPO_ENABLE:-True} \
+    +algorithm.filter_groups.metric=acc \
+    +algorithm.filter_groups.max_num_gen_batches=0 \
     data.train_files=$SCRATCH_DIR/hendrycks_math/train.parquet \
     data.val_files=$VAL_FILE \
     data.validation_shuffle=False \
@@ -83,10 +87,13 @@ CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES} PYTHONUNBUFFERED=1 python -m verl.traine
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.clip_ratio=0.2 \
+    actor_rollout_ref.actor.clip_ratio_low=0.2 \
+    actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    actor_rollout_ref.actor.loss_agg_mode=token-mean \
     actor_rollout_ref.actor.strategy=fsdp \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=4 \
-    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=40000 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=8 \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=20000 \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=40000 \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=40000 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
@@ -109,9 +116,8 @@ CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES} PYTHONUNBUFFERED=1 python -m verl.traine
     actor_rollout_ref.rollout.max_model_len=8192 \
     actor_rollout_ref.rollout.max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS} \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
-    actor_rollout_ref.rollout.val_kwargs.do_sample=True \
-    actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
-    actor_rollout_ref.rollout.val_kwargs.top_p=0.95 \
+    actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
+    actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
     actor_rollout_ref.rollout.agent.num_workers=${AGENT_NUM_WORKERS} \
     actor_rollout_ref.ref.strategy=fsdp \
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
@@ -128,8 +134,9 @@ CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES} PYTHONUNBUFFERED=1 python -m verl.traine
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.default_local_dir="${TRAINER_DEFAULT_LOCAL_DIR}" \
+    +trainer.eval_outputs_dir="${TRAINER_EVAL_OUTPUTS_DIR}" \
     +trainer.save_best_model=True \
-    +trainer.best_model_metric_key=val-core/avg_combined_reflection_acc \
+    +trainer.best_model_metric_key=val-core/avg_id_base_acc \
     trainer.save_freq=${SAVE_FREQ} \
     trainer.test_freq=${TEST_FREQ} \
     trainer.total_epochs=5 \
@@ -137,7 +144,7 @@ CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES} PYTHONUNBUFFERED=1 python -m verl.traine
     +ray_kwargs.ray_init.address="${RAY_INIT_ADDRESS}" \
     +ray_kwargs.ray_init._temp_dir="${RAY_TMPDIR}" \
     +ray_kwargs.ray_init.object_store_memory=${RAY_OBJECT_STORE_BYTES} \
-    trainer.val_before_train=True \
+    trainer.val_before_train=False \
     trainer.log_val_generations=32 \
     trainer.resume_mode=${RESUME_MODE} \
     trainer.max_actor_ckpt_to_keep=1 \

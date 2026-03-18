@@ -1,20 +1,11 @@
 """
 MATH Dataset Reward Function for VERL
 Wrapper around the high-recall math grader from understand-r1-zero project.
-
-This module provides reward computation for the HENDRYCKS MATH dataset,
-handling LaTeX boxed answers and symbolic mathematical expressions.
 """
 
 import importlib.util
 import os
 
-# Import the canonical math grader.
-#
-# Notes:
-# - When this reward fn is loaded via `load_module(file_path)` (Ray), there is no parent package, so relative imports
-#   fail. We explicitly load the sibling module from its file path in that case.
-# - Avoid mutating `sys.path`, since it can accidentally shadow third-party packages (e.g., `math_verify`).
 try:
     from .hendrycks_math_grader import boxed_reward_fn as _boxed_reward_fn
 except ImportError:
@@ -28,62 +19,33 @@ except ImportError:
 
 
 def compute_score(solution_str, ground_truth, data_source=None, extra_info=None, **kwargs):
-    """
-    Compute reward for a single MATH dataset response.
-
-    This function extracts answers from LaTeX \\boxed{} commands and grades them
-    using a high-recall grading system that handles symbolic math, fractions,
-    expressions, and various LaTeX formats.
-
-    This follows VERL's standard reward function interface (same as GSM8K).
-
-    Args:
-        solution_str: The model's response text
-        ground_truth: The ground truth answer string
-        data_source: Optional data source identifier (unused, for VERL compatibility)
-        extra_info: Optional extra info dict, may contain 'is_reflection' flag
-        **kwargs: Additional arguments (for VERL compatibility)
-
-    Returns:
-        dict with keys:
-            - "score": float, 0.0 for wrong/unformatted, 1.0 for correct
-            - "answer_present": bool, whether \\boxed{} was found
-            - "exact_match": bool, whether answer matches ground truth
-            - "score_base" or "score_reflection": float, same as score (for metric tracking)
-    """
     extra_info = extra_info or {}
-
-    # Use the canonical high-recall grading function
-    try:
-        grading_info, score = _boxed_reward_fn(
-            model_response=solution_str,
-            gt_answer=ground_truth,
-            fast=True,  # Use fast mode (string + SymPy, no math_verify timeout)
-        )
-
-        # Extract whether answer was formatted
-        formatted = grading_info.get("formatted", False)
-
-    except Exception as e:
-        # If grading fails, give zero reward
-        print(f"Warning: MATH grading failed: {e}")
-        score = 0.0
-        formatted = False
-
-    # Check if this is a reflection step
     is_reflection = bool(extra_info.get("is_reflection", False))
 
-    # Build result dict (matches GSM8K format for metric compatibility)
+    try:
+        grading_info, correctness_score = _boxed_reward_fn(
+            model_response=solution_str,
+            gt_answer=ground_truth,
+            fast=True,
+        )
+        formatted = grading_info.get("formatted", False)
+    except Exception as e:
+        print(f"Warning: MATH grading failed: {e}")
+        correctness_score = 0.0
+        formatted = False
+
+    final_score = float(correctness_score)
+
     result = {
-        "score": float(score),
-        "answer_present": formatted,  # Whether \\boxed{} was found
-        "exact_match": score > 0.0,  # Whether grading passed
+        "score": final_score,
+        "acc": float(correctness_score > 0.0),
+        "answer_present": formatted,
+        "exact_match": correctness_score > 0.0,
     }
 
-    # Add score tracking for base vs reflection
     if not is_reflection:
-        result["score_base"] = float(score)
+        result["score_base"] = final_score
     else:
-        result["score_reflection"] = float(score)
+        result["score_reflection"] = final_score
 
     return result

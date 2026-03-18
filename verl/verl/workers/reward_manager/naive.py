@@ -79,6 +79,27 @@ class NaiveRewardManager(AbstractRewardManager):
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
             rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
+            raw_prompt = data_item.non_tensor_batch.get("raw_prompt", None)
+
+            if raw_prompt is not None:
+                import numpy as np
+                if isinstance(raw_prompt, np.ndarray):
+                    raw_prompt = raw_prompt.tolist()
+                if isinstance(raw_prompt, tuple):
+                    raw_prompt = list(raw_prompt)
+                if isinstance(raw_prompt, list) and raw_prompt and isinstance(raw_prompt[0], dict):
+                    for msg in reversed(raw_prompt):
+                        if msg.get("role") == "user":
+                            raw_prompt = msg.get("content", "")
+                            if isinstance(raw_prompt, list):
+                                raw_prompt = "".join(
+                                    part.get("text", "") if isinstance(part, dict) else str(part)
+                                    for part in raw_prompt
+                                )
+                            break
+                if isinstance(raw_prompt, list) and not raw_prompt:
+                    raw_prompt = None
+
             extra_info["num_turns"] = num_turns
             extra_info["rollout_reward_scores"] = rollout_reward_scores
 
@@ -87,6 +108,7 @@ class NaiveRewardManager(AbstractRewardManager):
                 solution_str=response_str,
                 ground_truth=ground_truth,
                 extra_info=extra_info,
+                raw_prompt=raw_prompt,
             )
 
             if isinstance(score, dict):

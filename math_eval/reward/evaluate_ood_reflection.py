@@ -25,12 +25,19 @@ def _load_boxed_reward_fn():
 
 boxed_reward_fn = _load_boxed_reward_fn()
 
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "Follow this instruction, carefully review your previous solution:\n"
+#     "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding?\n"
+#     "2. If you find any mistakes, explicitly point out what was wrong and explain the correct approach.\n"
+#     "3. If the solution is already correct, verify each step and explain it more clearly.\n"
+#     "4. Finally, after finishing the review, YOU MUST write 'Improved solution:' and provide your refined solution and answer.\n"
+# )
+
 DEFAULT_REFLECTION_INSTRUCTION = (
-    "Follow this instruction, carefully review your previous solution:\n"
-    "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding?\n"
-    "2. If you find any mistakes, explicitly point out what was wrong and explain the correct approach.\n"
-    "3. If the solution is already correct, verify each step and explain it more clearly.\n"
-    "4. Finally, after finishing the review, YOU MUST write 'Improved solution:' and provide your refined solution and answer.\n"
+    "Review the solution above. Check it step by step for errors in reasoning, calculation, or problem understanding.\n"
+    "If you find mistakes, explain what went wrong and provide a corrected solution.\n"
+    "If the solution is already correct, refine the solution by explaining it more clearly.\n"
+    "Finally, provide your final answer.\n"
 )
 
 BENCHMARKS = {
@@ -44,9 +51,9 @@ BENCHMARKS = {
 SAMPLE_SIZES = {
     "AIME24": None,
     "AMC": None,
-    "MATH500": 100,
-    "Minerva": 100,
-    "OlympiadBench": 100,
+    "MATH500": None,
+    "Minerva": None,
+    "OlympiadBench": None,
 }
 
 RANDOM_SEED = 42
@@ -71,10 +78,13 @@ def main():
     if len(sys.argv) > 1:
         refiner_model_path = sys.argv[1]
     else:
-        # refiner_model_path = "/datadrive2/checkpoints/grpo_math_reflection_Qwen3-4B-Instruct-2507/best_model"
-        refiner_model_path = "Qwen/Qwen3-4B-Instruct-2507"
+        # refiner_model_path = "Qwen/Qwen3-4B-Instruct-2507"
+        # refiner_model_path = "/data1/qianfeng/ckpts/grpo_math_baseline_Qwen3-4B-Instruct-2507/best_model"
+        # refiner_model_path = "/data1/qianfeng/ckpts/drgrpo_math_baseline_Qwen3-4B-Instruct-2507/best_model"
+        # refiner_model_path = "/data1/qianfeng/ckpts/dapo_math_Qwen3-4B-Instruct-2507-dapo-r8/best_model"
+        refiner_model_path = "/data1/qianfeng/ckpts/grpo_math_refpo_dapo_Qwen3-4B-Instruct-2507/best_model"
 
-    default_traces_dir = REPO_ROOT / "math_eval" / "ood_traces" / "qwen3-30b-a3b"
+    default_traces_dir = REPO_ROOT / "math_eval" / "ood_traces" / "gemma-3-27b-it"
     ood_base_answers_path = sys.argv[2] if len(sys.argv) > 2 else str(default_traces_dir / "base_answers.parquet")
     output_dir = Path(sys.argv[3]) if len(sys.argv) > 3 else (default_traces_dir / "reflection_results")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -162,7 +172,7 @@ def main():
     print(f"Total reflection prompts: {len(reflection_prompts)}")
 
     sampling_params = SamplingParams(
-        temperature=1.0,
+        temperature=0.0,
         max_tokens=3000,
         top_p=1.0,
     )
