@@ -66,11 +66,7 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.config import FSDPEngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
-# ============================================================================
-# REFLECTION PROMPT OPTIONS - Manually uncomment ONE to test
-# ============================================================================
-
-# OPTION 1: Original detailed prompt (for non-thinking models)
+# OPTION 1: for non-thinking models
 DEFAULT_REFLECTION_INSTRUCTION = (
     "Follow this instruction, carefully review your previous solution:\n"
     "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding.\n"
@@ -79,48 +75,15 @@ DEFAULT_REFLECTION_INSTRUCTION = (
     "4. Finally, after finishing the review, provide your refined solution and answer.\n"
 )
 
-# # OPTION 2: Verification-focused (for thinking models) - emphasize independent verification
+# OPTION 2: for thinking models
 # DEFAULT_REFLECTION_INSTRUCTION = (
-#     "You previously solved this math problem. Now independently verify your answer:\n"
-#     "1. Re-read the problem and confirm you understood it correctly.\n"
-#     "2. Check your final answer by solving the problem again from scratch.\n"
-#     "3. If your new answer differs from your previous one, determine which is correct.\n"
-#     "4. Provide your refined solution and answer.\n"
+#     "Review your previous solution, including your thinking process:\n"
+#     "1. Examine your reasoning step-by-step in your thinking. Are there logical gaps, errors, or unclear steps?\n"
+#     "2. Check your calculations and approach - did you use the right formula or method?\n"
+#     "3. If you find mistakes in your reasoning or approach, explain what was wrong and provide the correct reasoning.\n"
+#     "4. If your solution is already correct, verify each step and confirm your approach.\n"
+#     "5. Finally, after finishing the review, provide your refined solution and answer.\n"
 # )
-
-# # OPTION 3: Error-hunting focused - focus on finding specific mistakes
-# DEFAULT_REFLECTION_INSTRUCTION = (
-#     "Review your previous solution and hunt for errors:\n"
-#     "1. Did you misunderstand any part of the problem?\n"
-#     "2. Are there any calculation mistakes? Check each step carefully.\n"
-#     "3. Did you use the wrong formula or approach?\n"
-#     "4. If you find an error, correct it and provide the refined answer. If no errors, confirm your answer.\n"
-#     "Final answer format: \\boxed{YOUR_ANSWER}\n"
-# )
-
-# # OPTION 4: Concise/direct - short and to the point
-# DEFAULT_REFLECTION_INSTRUCTION = (
-#     "Check your previous answer. If you believe it's wrong, explicitly point out what was wrong and explain the correct approach. "
-#     "If you believe it's correct, simply confirm it. Put your final answer in \\boxed{}.\n"
-# )
-
-# # OPTION 5: Structured fresh-look - step-by-step with fresh perspective
-# DEFAULT_REFLECTION_INSTRUCTION = (
-#     "Take a fresh look at this problem and your previous answer:\n"
-#     "- Work through the problem methodically in your thinking.\n"
-#     "- Identify any mistakes in your previous approach.\n"
-#     "- Provide your refined solution, ending with \\boxed{FINAL_ANSWER}.\n"
-# )
-
-# OPTION 6
-DEFAULT_REFLECTION_INSTRUCTION = (
-    "Review your previous solution, including your thinking process:\n"
-    "1. Examine your reasoning step-by-step in your thinking. Are there logical gaps, errors, or unclear steps?\n"
-    "2. Check your calculations and approach - did you use the right formula or method?\n"
-    "3. If you find mistakes in your reasoning or approach, explain what was wrong and provide the correct reasoning.\n"
-    "4. If your solution is already correct, verify each step and confirm your approach.\n"
-    "5. Finally, after finishing the review, provide your refined solution and answer.\n"
-)
 
 VAL_SAMPLE_SIZES: dict[str, int | None] = {
     "AIME24": None,
