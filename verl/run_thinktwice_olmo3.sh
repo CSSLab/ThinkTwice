@@ -74,10 +74,10 @@ CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES} PYTHONUNBUFFERED=1 python -m verl.traine
     algorithm.adv_estimator=grpo \
     algorithm.norm_adv_by_std_in_grpo=False \
     algorithm.use_kl_in_reward=False \
-    +algorithm.reflection.steps=0 \
+    +algorithm.reflection.steps=2 \
     +algorithm.reflection.validate=False \
     ++algorithm.reflection_selection_mode=uniform \
-    +algorithm.filter_groups.enable=${DAPO_ENABLE:-True} \
+    +algorithm.filter_groups.enable=${DAPO_ENABLE:-False} \
     +algorithm.filter_groups.metric=acc \
     +algorithm.filter_groups.max_num_gen_batches=0 \
     data.train_files=$SCRATCH_DIR/hendrycks_math/train.parquet \
