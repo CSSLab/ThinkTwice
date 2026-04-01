@@ -221,6 +221,7 @@ class AgentLoopBase(ABC):
         self.dataset_cls = dataset_cls
         self.dataset_config = dataset_config
         self.apply_chat_template_kwargs = dataset_config.get("apply_chat_template_kwargs", {})
+        self.remove_system_prompt = dataset_config.get("remove_system_prompt", False)
         self.system_prompt = initialize_system_prompt(self.tokenizer, **self.apply_chat_template_kwargs)
         self.loop = get_event_loop()
 
@@ -251,7 +252,7 @@ class AgentLoopBase(ABC):
         tools: list[dict] = None,
         images: list[Image.Image] = None,
         videos: list[tuple[torch.Tensor, dict]] = None,
-        remove_system_prompt: bool = False,
+        remove_system_prompt: bool = None,
     ):
         """Apply chat template to messages with optional tools, images, and videos.
 
@@ -260,11 +261,15 @@ class AgentLoopBase(ABC):
             tools (list[dict], optional): Tools schemas. Defaults to None.
             images (list[Image.Image], optional): Input images. Defaults to None.
             videos (list[tuple[torch.Tensor, dict]], optional): Input videos. Defaults to None.
-            remove_system_prompt (bool, optional): Whether to remove system prompt. Defaults to False.
+            remove_system_prompt (bool, optional): Whether to remove system prompt. Defaults to config value.
 
         Returns:
             list[int]: Prompt token ids.
         """
+        # Use config value if not explicitly provided
+        if remove_system_prompt is None:
+            remove_system_prompt = self.remove_system_prompt
+
         if self.processor is not None:
             raw_prompt = await self.loop.run_in_executor(
                 None,

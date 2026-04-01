@@ -113,6 +113,12 @@ class RLHFDataset(Dataset):
         self.truncation = config.get("truncation", "error")
         self.filter_overlong_prompts = config.get("filter_overlong_prompts", True)
         self.apply_chat_template_kwargs = config.get("apply_chat_template_kwargs", {})
+        self.remove_system_prompt = config.get("remove_system_prompt", False)
+
+        # Initialize system prompt tokens for models with baked-in system prompts
+        self.system_prompt_tokens = []
+        if self.remove_system_prompt:
+            self.system_prompt_tokens = self._initialize_system_prompt_tokens()
 
         self.tool_config_path = config.get("tool_config_path", None)
         self.tool_schemas = None
@@ -178,6 +184,21 @@ class RLHFDataset(Dataset):
 
         self.dataframe = self.maybe_filter_out_long_prompts(self.dataframe)
 
+    def _initialize_system_prompt_tokens(self) -> list[int]:
+        """
+        Initialize system prompt tokens for chat templates that have baked-in system prompts.
+        Uses the same logic as verl.utils.chat_template.initialize_system_prompt.
+
+        Returns:
+            List of token IDs for the system prompt, or empty list if not detected
+        """
+        try:
+            from verl.utils.chat_template import initialize_system_prompt
+            return initialize_system_prompt(self.tokenizer, **self.apply_chat_template_kwargs)
+        except Exception as e:
+            logger.warning(f"Failed to initialize system prompt tokens: {e}")
+            return []
+
     def maybe_filter_out_long_prompts(self, dataframe: datasets.Dataset = None):
         # filter out too long prompts
         if self.filter_overlong_prompts:
@@ -225,11 +246,13 @@ class RLHFDataset(Dataset):
                             videos = None
                             videos_kwargs = {}
 
-                        return len(
-                            processor(text=[raw_prompt], images=images, videos=videos, videos_kwargs=videos_kwargs)[
-                                "input_ids"
-                            ][0]
-                        )
+                        input_ids = processor(text=[raw_prompt], images=images, videos=videos, videos_kwargs=videos_kwargs)[
+                            "input_ids"
+                        ][0]
+                        # Remove system prompt tokens if configured
+                        if self.remove_system_prompt and len(self.system_prompt_tokens) > 0:
+                            input_ids = input_ids[len(self.system_prompt_tokens):]
+                        return len(input_ids)
                     except Exception:
                         print("Error processing one of the samples, skipping...")
                         traceback.print_exc()
@@ -243,9 +266,11 @@ class RLHFDataset(Dataset):
                         if self.tool_schemas is not None:
                             apply_kwargs["tools"] = self.tool_schemas
 
-                        return len(
-                            tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True, **apply_kwargs)
-                        )
+                        input_ids = tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True, **apply_kwargs)
+                        # Remove system prompt tokens if configured
+                        if self.remove_system_prompt and len(self.system_prompt_tokens) > 0:
+                            input_ids = input_ids[len(self.system_prompt_tokens):]
+                        return len(input_ids)
                     except Exception:
                         print("Error processing one of the samples, skipping...")
                         traceback.print_exc()

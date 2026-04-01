@@ -129,3 +129,6 @@ datagen:
 
 # Additional kwargs when calling tokenizer.apply_chat_template
 apply_chat_template_kwargs: {}
+
+# Whether to remove system prompt from chat template (for models with baked-in system prompts)
+remove_system_prompt: False

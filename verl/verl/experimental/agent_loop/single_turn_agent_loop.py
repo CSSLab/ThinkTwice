@@ -46,9 +46,12 @@ class SingleTurnAgentLoop(AgentLoopBase):
         videos = multi_modal_data.get("videos")
 
         # 2. apply chat template and tokenize
+        # Pass None instead of empty list to avoid triggering OLMo3's long system prompt
+        # OLMo3's template: tools=None → short prompt, tools=[] → long function-calling prompt
+        tools_param = self.tool_schemas if self.tool_schemas else None
         prompt_ids = await self.apply_chat_template(
             messages,
-            tools=self.tool_schemas,
+            tools=tools_param,
             images=images,
             videos=videos,
         )

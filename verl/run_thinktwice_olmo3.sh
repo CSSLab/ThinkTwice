@@ -1,0 +1,161 @@
+#!/bin/bash
+
+# RefPo + DAPO training script for OLMo-3-7B-Instruct (NON_THINKING variant)
+# Adapted from run_refpo_dapo_math_gemma3.sh
+#
+# Model: allenai/Olmo-3-7B-Instruct
+# Key differences from Qwen3:
+# - No thinking tokens (model is non-thinking, vocab_size=100278)
+# - Chat template: ChatML-style <|im_start|>/|im_end|> (same as Qwen3)
+# - Role: 'assistant' (same as Qwen3)
+# - Standard tokenizer: GPT2TokenizerFast
+#
+# vLLM compatibility: tensor_model_parallel_size MUST be 1 due to bug #29478
+
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate verl
+
+export WANDB_ENTITY=${WANDB_ENTITY:-"your-entity"}
+export WANDB_PROJECT=refpo-grpo-math-olmo3
+export WANDB_MODE=${WANDB_MODE:-offline}
+
+set -x
+
+RAY_INIT_ADDRESS=${RAY_INIT_ADDRESS:-local}
+RAY_STOP_BEFORE_RUN=${RAY_STOP_BEFORE_RUN:-0}
+if [[ "${RAY_STOP_BEFORE_RUN}" == "1" ]]; then
+    ray stop -f || true
+fi
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH_DIR="${REPO_ROOT}/scratch"
+B=32
+VAL_B=512
+N=8
+L=3000
+NAME=refpo_olmo3-7b-instruct-nosys
+DEFAULT_CKPT_ROOT="${HOME}/ckpts"
+DEFAULT_RAY_TMPDIR="${HOME}/ray"
+DEFAULT_TMPDIR="${HOME}/tmp"
+DEFAULT_WANDB_DIR="${HOME}/wandb"
+DEFAULT_EVAL_OUTPUTS_DIR="${HOME}/eval_outputs"
+CKPT_ROOT=${CKPT_ROOT:-"${DEFAULT_CKPT_ROOT}"}
+RAY_TMPDIR=${RAY_TMPDIR:-"${DEFAULT_RAY_TMPDIR}"}
+TMPDIR=${TMPDIR:-"${DEFAULT_TMPDIR}"}
+WANDB_DIR=${WANDB_DIR:-"${DEFAULT_WANDB_DIR}"}
+EVAL_OUTPUTS_DIR=${EVAL_OUTPUTS_DIR:-"${DEFAULT_EVAL_OUTPUTS_DIR}"}
+export RAY_TMPDIR
+export TMPDIR
+export WANDB_DIR
+
+RAY_OBJECT_STORE_GB=${RAY_OBJECT_STORE_GB:-64}
+RAY_OBJECT_STORE_BYTES=$((RAY_OBJECT_STORE_GB * 1024 * 1024 * 1024))
+RAY_MEMORY_USAGE_THRESHOLD=${RAY_MEMORY_USAGE_THRESHOLD:-0.99}
+export RAY_memory_usage_threshold="${RAY_MEMORY_USAGE_THRESHOLD}"
+
+TRAINER_DEFAULT_LOCAL_DIR="${CKPT_ROOT}/${NAME}"
+TRAINER_EVAL_OUTPUTS_DIR="${EVAL_OUTPUTS_DIR}/${NAME}"
+VAL_FILE=${VAL_FILE:-"$SCRATCH_DIR/math_combined/test.parquet"}
+mkdir -p "${TRAINER_DEFAULT_LOCAL_DIR}" "${TRAINER_EVAL_OUTPUTS_DIR}" "${RAY_TMPDIR}" "${TMPDIR}" "${WANDB_DIR}"
+
+GPU_UTIL=${GPU_UTIL:-0.4}
+MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-16000}
+VISIBLE_DEVICES=${VISIBLE_DEVICES:-0,1}
+SAVE_FREQ=${SAVE_FREQ:-10}
+TEST_FREQ=${TEST_FREQ:-10}
+RESUME_MODE=${RESUME_MODE:-disable}
+ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-False}
+ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-False}
+ENABLE_ACTIVATION_OFFLOAD=${ENABLE_ACTIVATION_OFFLOAD:-False}
+AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-16}
+REWARD_USE_REWARD_LOOP=${REWARD_USE_REWARD_LOOP:-False}
+
+CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES} PYTHONUNBUFFERED=1 python -m verl.trainer.main_ppo \
+    algorithm.adv_estimator=grpo \
+    algorithm.norm_adv_by_std_in_grpo=False \
+    algorithm.use_kl_in_reward=False \
+    +algorithm.reflection.steps=0 \
+    +algorithm.reflection.validate=False \
+    ++algorithm.reflection_selection_mode=uniform \
+    +algorithm.filter_groups.enable=${DAPO_ENABLE:-True} \
+    +algorithm.filter_groups.metric=acc \
+    +algorithm.filter_groups.max_num_gen_batches=0 \
+    data.train_files=$SCRATCH_DIR/hendrycks_math/train.parquet \
+    data.val_files=$VAL_FILE \
+    data.validation_shuffle=False \
+    data.train_batch_size=$B \
+    data.val_batch_size=$VAL_B \
+    data.max_prompt_length=5120 \
+    data.max_response_length=$L \
+    data.filter_overlong_prompts=False \
+    data.truncation='error' \
+    +data.apply_chat_template_kwargs.enable_thinking=False \
+    ++data.remove_system_prompt=True \
+    actor_rollout_ref.model.path=${MODEL_PATH:-"allenai/Olmo-3-7B-Instruct"} \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.ppo_epochs=1 \
+    actor_rollout_ref.actor.clip_ratio=0.2 \
+    actor_rollout_ref.actor.clip_ratio_low=0.2 \
+    actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    actor_rollout_ref.actor.loss_agg_mode=token-mean \
+    actor_rollout_ref.actor.strategy=fsdp \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.actor.ppo_mini_batch_size=8 \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16000 \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=32000 \
+    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=32000 \
+    actor_rollout_ref.actor.use_dynamic_bsz=True \
+    actor_rollout_ref.actor.use_kl_loss=False \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=True \
+    actor_rollout_ref.actor.entropy_coeff=0.0 \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.model.enable_activation_offload=${ENABLE_ACTIVATION_OFFLOAD} \
+    actor_rollout_ref.actor.fsdp_config.param_offload=${ACTOR_PARAM_OFFLOAD} \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=${ACTOR_OPTIMIZER_OFFLOAD} \
+    actor_rollout_ref.actor.fsdp_config.fsdp_size=2 \
+    actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.temperature=1.0 \
+    actor_rollout_ref.rollout.top_p=1.0 \
+    actor_rollout_ref.rollout.top_k=-1 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=${GPU_UTIL} \
+    actor_rollout_ref.rollout.n=$N \
+    actor_rollout_ref.rollout.max_model_len=8192 \
+    actor_rollout_ref.rollout.max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS} \
+    actor_rollout_ref.rollout.val_kwargs.n=1 \
+    actor_rollout_ref.rollout.val_kwargs.temperature=0.0 \
+    actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
+    actor_rollout_ref.rollout.agent.num_workers=${AGENT_NUM_WORKERS} \
+    actor_rollout_ref.ref.strategy=fsdp \
+    actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    reward_model.enable=False \
+    reward_model.use_reward_loop=${REWARD_USE_REWARD_LOOP} \
+    reward_model.reward_manager=naive \
+    custom_reward_function.path="${REPO_ROOT}/verl/verl/utils/reward_score/math_dataset.py" \
+    custom_reward_function.name=compute_score \
+    trainer.critic_warmup=0 \
+    trainer.logger=[console,wandb] \
+    trainer.project_name=reflection-grpo-math \
+    trainer.experiment_name=${NAME} \
+    trainer.n_gpus_per_node=2 \
+    trainer.nnodes=1 \
+    trainer.default_local_dir="${TRAINER_DEFAULT_LOCAL_DIR}" \
+    +trainer.eval_outputs_dir="${TRAINER_EVAL_OUTPUTS_DIR}" \
+    +trainer.save_best_model=True \
+    +trainer.best_model_metric_key=val-core/avg_id_base_acc \
+    trainer.save_freq=${SAVE_FREQ} \
+    trainer.test_freq=${TEST_FREQ} \
+    trainer.total_epochs=5 \
+    ray_kwargs.ray_init.num_cpus=32 \
+    +ray_kwargs.ray_init.address="${RAY_INIT_ADDRESS}" \
+    +ray_kwargs.ray_init._temp_dir="${RAY_TMPDIR}" \
+    +ray_kwargs.ray_init.object_store_memory=${RAY_OBJECT_STORE_BYTES} \
+    trainer.val_before_train=False \
+    trainer.log_val_generations=32 \
+    trainer.resume_mode=${RESUME_MODE} \
+    trainer.max_actor_ckpt_to_keep=1 \
+    trainer.max_critic_ckpt_to_keep=1 \
+    +trainer.start_save_step=10 \
+    $@

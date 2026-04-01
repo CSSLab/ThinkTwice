@@ -75,6 +75,16 @@ DEFAULT_REFLECTION_INSTRUCTION = (
     "4. Finally, after finishing the review, provide your refined solution and answer.\n"
 )
 
+# # OLMO 1
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "Check your previous solution step-by-step:\n1. Examine your reasoning for logical gaps or errors.\n2. Verify your calculations and approach.\n3. If you find mistakes, explain what was wrong and correct them.\n4. If correct, confirm your answer in \\boxed{}.\n"
+# )
+
+# OLMO 2
+# DEFAULT_REFLECTION_INSTRUCTION = (
+#     "Review your previous solution step-by-step independently:\n1. Re-read the problem and check if you understood it correctly.\n2. Work through the problem again to verify your answer.\n3. If your answers differ, determine which is correct.\n4. Provide your final answer in \\boxed{}.\n"
+# )
+
 # OPTION 2: for thinking models
 # DEFAULT_REFLECTION_INSTRUCTION = (
 #     "Review your previous solution, including your thinking process:\n"
@@ -766,9 +776,29 @@ class RayPPOTrainer:
             response_mask = compute_response_mask(gen_batch_output)
         reflection_prompts = []
 
-        # Get the thinking markers for Qwen3 (tokens 151667 and 15168)
-        thinking_start_marker = self.tokenizer.decode([151667], skip_special_tokens=False)
-        thinking_end_marker = self.tokenizer.decode([151668], skip_special_tokens=False)
+        # === CUSTOM: Model-agnostic thinking token handling ===
+        # Check if this model has thinking tokens (Qwen3 uses 151667, 151668)
+        # For non-thinking models (Gemma-3, Phi-4, etc.), skip thinking content extraction
+        thinking_token_ids = self.config.get("thinking_token_ids", None)
+        if thinking_token_ids is None:
+            # Auto-detect: only use Qwen3 thinking tokens if vocab size indicates Qwen3
+            # Qwen3 vocab ~151643, thinking tokens 151667/151668 are special tokens
+            # Gemma-3 vocab 262144 would decode these as random tokens
+            # Range check: Qwen3 vocab is approximately 150000-153000
+            qwen3_vocab_min = 150000
+            qwen3_vocab_max = 153000
+            vocab_size = getattr(self.tokenizer, 'vocab_size', 0)
+            if qwen3_vocab_min <= vocab_size <= qwen3_vocab_max:
+                thinking_token_ids = [151667, 151668]
+            else:
+                thinking_token_ids = None
+
+        thinking_start_marker = None
+        thinking_end_marker = None
+        if thinking_token_ids and len(thinking_token_ids) >= 2:
+            thinking_start_marker = self.tokenizer.decode([thinking_token_ids[0]], skip_special_tokens=False)
+            thinking_end_marker = self.tokenizer.decode([thinking_token_ids[1]], skip_special_tokens=False)
+        # === END CUSTOM ===
 
         for i in range(len(raw_prompts)):
             question = self._extract_last_user_message(raw_prompts[i])
@@ -783,7 +813,7 @@ class RayPPOTrainer:
             thinking_content = None
             final_answer = full_response
 
-            if thinking_start_marker in full_response:
+            if thinking_start_marker is not None and thinking_start_marker in full_response:
                 parts = full_response.split(thinking_start_marker, 1)
                 if len(parts) > 1:
                     middle_part = parts[1]

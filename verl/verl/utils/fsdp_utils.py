@@ -123,16 +123,33 @@ def get_fsdp_wrap_policy(module, config=None, is_lora=False):
         transformer_cls_to_wrap = set()
         for layer_class in fsdp_transformer_layer_cls_to_wrap:
             transformer_cls = get_module_class_from_name(module, layer_class)
+            # === CUSTOM: Fallback for models where get_module_class_from_name fails ===
+            # This can happen with:
+            # 1. Some model architectures (e.g., Gemma3) due to nested structure
+            # 2. Multimodal models where vision components aren't loaded (text-only training)
             if transformer_cls is None:
-                raise Exception("Could not find the transformer layer class to wrap in the model.")
-            else:
+                # Fallback 1: search for the class by name in the module's submodules
+                for name, submodule in module.named_modules():
+                    if submodule.__class__.__name__ == layer_class:
+                        transformer_cls = submodule.__class__
+                        break
+            # === END CUSTOM ===
+            if transformer_cls is not None:
                 transformer_cls_to_wrap.add(transformer_cls)
+            # Skip classes that don't exist in the current model (e.g., vision components in text-only mode)
 
-        transformer_policy = functools.partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls=transformer_cls_to_wrap,
-        )
-        policies.append(transformer_policy)
+        if not transformer_cls_to_wrap:
+            # If no valid classes found, fall back to size-based policy
+            if min_num_params == 0:
+                min_num_params = 1000000  # Default to ~1M params per shard
+            size_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=min_num_params)
+            policies.append(size_policy)
+        else:
+            transformer_policy = functools.partial(
+                transformer_auto_wrap_policy,
+                transformer_layer_cls=transformer_cls_to_wrap,
+            )
+            policies.append(transformer_policy)
 
     if len(policies) > 0:
         auto_wrap_policy = functools.partial(_or_policy, policies=policies)

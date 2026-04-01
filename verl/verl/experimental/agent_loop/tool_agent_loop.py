@@ -210,9 +210,12 @@ class ToolAgentLoop(AgentLoopBase):
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
         """Handle the pending state: prepare the prompt and start generation."""
+        # Pass None instead of empty list to avoid triggering OLMo3's long system prompt
+        # OLMo3's template: tools=None → short prompt, tools=[] → long function-calling prompt
+        tools_param = self.tool_schemas if self.tool_schemas else None
         prompt_ids = await self.apply_chat_template(
             agent_data.messages,
-            tools=self.tool_schemas,
+            tools=tools_param,
             images=agent_data.image_data,
             videos=agent_data.video_data,
         )
