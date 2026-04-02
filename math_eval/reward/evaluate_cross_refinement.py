@@ -55,17 +55,18 @@ def get_model_configs():
     ckpt_root = os.path.expandvars(os.environ.get("CKPT_ROOT", f"{os.path.expanduser('~')}/ckpts"))
     return {
         "base": "Qwen/Qwen3-4B-Instruct-2507",
-        "grpo": f"{ckpt_root}/grpo_math_baseline_Qwen3-4B-Instruct-2507/best_model",
-        "drgrpo": f"{ckpt_root}/drgrpo_math_baseline_Qwen3-4B-Instruct-2507/best_model",
-        "dapo": f"{ckpt_root}/dapo_math_Qwen3-4B-Instruct-2507-dapo-r8/best_model",
-        "refpo": f"{ckpt_root}/grpo_math_refpo_dapo_Qwen3-4B-Instruct-2507/best_model",
+        "grpo": f"{ckpt_root}/grpo_qwen3/best_model",
+        "drgrpo": f"{ckpt_root}/drgrpo_qwen3/best_model",
+        "dapo": f"{ckpt_root}/dapo_qwen3/best_model",
+        "refpo": f"{ckpt_root}/refpo_qwen3/best_model",
     }
 
 MODEL_CONFIGS = get_model_configs()
 
-# Separation: BASE_MODELS generate base responses, REFL_MODELS generate reflections
-# For full cross-evaluation, set both to all models. For targeted evaluation, use subsets.
 BASE_MODELS = [
+    "base",
+    "grpo",
+    "drgrpo",
     "dapo",
     "refpo",
 ]

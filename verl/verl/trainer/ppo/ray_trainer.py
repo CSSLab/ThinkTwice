@@ -66,7 +66,6 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.config import FSDPEngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
-# OPTION 1: for non-thinking models
 DEFAULT_REFLECTION_INSTRUCTION = (
     "Follow this instruction, carefully review your previous solution:\n"
     "1. Go through each calculation step-by-step. Check if there are any errors in calculations, logic, or problem understanding.\n"
@@ -74,26 +73,6 @@ DEFAULT_REFLECTION_INSTRUCTION = (
     "3. If the solution is already correct, verify each step and explain it more clearly.\n"
     "4. Finally, after finishing the review, provide your refined solution and answer.\n"
 )
-
-# # OLMO 1
-# DEFAULT_REFLECTION_INSTRUCTION = (
-#     "Check your previous solution step-by-step:\n1. Examine your reasoning for logical gaps or errors.\n2. Verify your calculations and approach.\n3. If you find mistakes, explain what was wrong and correct them.\n4. If correct, confirm your answer in \\boxed{}.\n"
-# )
-
-# OLMO 2
-# DEFAULT_REFLECTION_INSTRUCTION = (
-#     "Review your previous solution step-by-step independently:\n1. Re-read the problem and check if you understood it correctly.\n2. Work through the problem again to verify your answer.\n3. If your answers differ, determine which is correct.\n4. Provide your final answer in \\boxed{}.\n"
-# )
-
-# OPTION 2: for thinking models
-# DEFAULT_REFLECTION_INSTRUCTION = (
-#     "Review your previous solution, including your thinking process:\n"
-#     "1. Examine your reasoning step-by-step in your thinking. Are there logical gaps, errors, or unclear steps?\n"
-#     "2. Check your calculations and approach - did you use the right formula or method?\n"
-#     "3. If you find mistakes in your reasoning or approach, explain what was wrong and provide the correct reasoning.\n"
-#     "4. If your solution is already correct, verify each step and confirm your approach.\n"
-#     "5. Finally, after finishing the review, provide your refined solution and answer.\n"
-# )
 
 VAL_SAMPLE_SIZES: dict[str, int | None] = {
     "AIME24": None,

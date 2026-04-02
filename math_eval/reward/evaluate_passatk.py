@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+from scipy.special import comb
 import pandas as pd
 import torch
 from transformers import AutoTokenizer
@@ -23,10 +24,10 @@ RANDOM_SEED = 42
 
 BENCHMARKS = {
     "AIME24": SCRATCH_DIR / "aime2024/test.parquet",
-    # "AMC": SCRATCH_DIR / "amc/test.parquet",
-    # "MATH500": SCRATCH_DIR / "math500/test.parquet",
-    # "Minerva": SCRATCH_DIR / "minerva_math/test.parquet",
-    # "OlympiadBench": SCRATCH_DIR / "olympiadbench/test.parquet",
+    "AMC": SCRATCH_DIR / "amc/test.parquet",
+    "MATH500": SCRATCH_DIR / "math500/test.parquet",
+    "Minerva": SCRATCH_DIR / "minerva_math/test.parquet",
+    "OlympiadBench": SCRATCH_DIR / "olympiadbench/test.parquet",
 }
 
 DEFAULT_REFLECTION_INSTRUCTION = (
@@ -51,7 +52,11 @@ def _load_boxed_reward_fn():
 def compute_pass_at_k(correct_counts, total_samples, k_values):
     results = {}
     for k in k_values:
-        pass_at_k = np.mean([1 - (1 - c / total_samples) ** k for c in correct_counts])
+        pass_at_k = np.mean([
+            1.0 - comb(total_samples - c, k, exact=False) / comb(total_samples, k, exact=False)
+            if total_samples - c >= k else 1.0
+            for c in correct_counts
+        ])
         results[k] = pass_at_k * 100
     return results
 
@@ -213,7 +218,7 @@ def main():
 
     # Set model_path via command line argument or environment variable
     # Example: CKPT_ROOT=${HOME}/ckpts python evaluate_passatk_posthoc.py
-    default_model_path = os.path.expandvars("${CKPT_ROOT}/${MODEL_NAME:-grpo_math_refpo_dapo_Qwen3-4B-Instruct-2507}/best_model")
+    default_model_path = os.path.expandvars("${CKPT_ROOT}/${MODEL_NAME}/best_model")
     model_path = os.sys.argv[1] if len(os.sys.argv) > 1 else default_model_path
 
     if len(os.sys.argv) > 1:
