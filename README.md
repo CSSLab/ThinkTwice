@@ -31,7 +31,7 @@ python math_eval/ppc/minerva_math.py
 python math_eval/ppc/olympiadbench.py
 ```
 
-The training data (`scratch/hendrycks_math/train.parquet`) and combined validation set (`scratch/math_combined/test.parquet`) should also be prepared before training.
+See the training data at `scratch/hendrycks_math/train.parquet` and validation set at `scratch/math_combined/test.parquet`.
 
 ### 3. Download Model Weights
 
