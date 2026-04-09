@@ -1,5 +1,9 @@
 # ThinkTwice
 
+[![arXiv](https://img.shields.io/badge/arXiv-2604.01591-b31b1b?logo=arxiv&logoWidth=10&link=https://arxiv.org/pdf/2604.01591)](https://arxiv.org/pdf/2604.01591)
+[![Qwen3-4B](https://img.shields.io/badge/🤗%20Qwen3--4B-Model-yellow?link=https://huggingface.co/difanjiao/ThinkTwice-Qwen3-4B-Instruct)](https://huggingface.co/difanjiao/ThinkTwice-Qwen3-4B-Instruct)
+[![OLMo3-7B](https://img.shields.io/badge/🤗%20OLMo3--7B-Model-yellow?link=https://huggingface.co/difanjiao/ThinkTwice-Olmo3-7B-Instruct)](https://huggingface.co/difanjiao/ThinkTwice-Olmo3-7B-Instruct)
+
 Official implementation for **ThinkTwice**, a two-phase extension of Group Relative Policy Optimization (GRPO) that jointly optimizes LLMs to solve reasoning problems and refine their answers. In each training cycle, ThinkTwice first trains the model on the reasoning task and subsequently on revising its responses, using a consistent correctness reward without external guidance.
 
 ## Requirements
