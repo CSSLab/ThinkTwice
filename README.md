@@ -6,6 +6,21 @@
 
 Official implementation for **ThinkTwice**, a two-phase extension of Group Relative Policy Optimization (GRPO) that jointly optimizes LLMs to solve reasoning problems and refine their answers. In each training cycle, ThinkTwice first trains the model on the reasoning task and subsequently on revising its responses, using a consistent correctness reward without external guidance.
 
+## Paper and Citation
+
+Read the paper here: [ThinkTwice: Jointly Optimizing Large Language Models for Reasoning and Self-Refinement](https://arxiv.org/abs/2604.01591)
+
+If you use ThinkTwice in your work, please cite:
+
+```bibtex
+@article{jiao2026thinktwice,
+  title={ThinkTwice: Jointly Optimizing Large Language Models for Reasoning and Self-Refinement},
+  author={Jiao, Difan and Wen, Qianfeng and Yang, Blair and Tang, Zhenwei and Anderson, Ashton},
+  journal={arXiv preprint arXiv:2604.01591},
+  year={2026}
+}
+```
+
 ## Requirements
 
 - **Hardware**: 2+ NVIDIA GPUs (tested on A100/H100)
